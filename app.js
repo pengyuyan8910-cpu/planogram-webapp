@@ -16,7 +16,8 @@
     dragPayload: null,
     dragHoverEl: null,
     lastMovedProductId: null,
-    lastMoveLabel: ""
+    lastMoveLabel: "",
+    lastMoveTimer: null
   };
 
   const el = id => document.getElementById(id);
@@ -380,7 +381,18 @@
       const moved = qs(`.pit[data-product-id="${CSS.escape(productId)}"]`);
       moved?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
     });
-    setStatus(`已移动：${product.name}的${sourceBlock.length}个坑位已整体移动到${targetGroupId}-${targetLayer}层，并以“刚移动”标记显示。`);
+    if (state.lastMoveTimer) window.clearTimeout(state.lastMoveTimer);
+    state.lastMoveTimer = window.setTimeout(() => {
+      if (state.lastMovedProductId !== productId) return;
+      state.lastMovedProductId = null;
+      state.lastMoveLabel = "";
+      qsa(`.pit[data-product-id="${CSS.escape(productId)}"]`).forEach(node => {
+        node.classList.remove("just-moved");
+        node.querySelector(".move-badge")?.remove();
+      });
+      state.lastMoveTimer = null;
+    }, 60_000);
+    setStatus(`已移动：${product.name}的${sourceBlock.length}个坑位已整体移动到${targetGroupId}-${targetLayer}层，并以“刚移动”标记显示 1 分钟。`);
     return true;
   }
 
@@ -994,6 +1006,8 @@
       groupId: pit.dataset.groupId,
       layer: pit.dataset.layer
     };
+    if (state.lastMoveTimer) window.clearTimeout(state.lastMoveTimer);
+    state.lastMoveTimer = null;
     state.lastMovedProductId = null;
     state.lastMoveLabel = "";
     event.dataTransfer.effectAllowed = "move";
