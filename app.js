@@ -678,10 +678,10 @@
         <div class="pit-kind">${kindText}</div>
         <div class="meta"><span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.thirdCategory || "\u672a\u5206\u7c7b")}</div>
         <div class="meta">${integer(product.faceWidth)}×${integer(product.depth)}×${integer(product.height)}mm</div>
-        <div class="meta">货架${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
+        <div class="meta">满陈${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
         <div class="mini-actions">
           <button class="mini-btn edit-product" type="button" data-product-id="${escapeHtml(product.id)}">编辑</button>
-          <button class="mini-btn down-product" type="button" data-product-id="${escapeHtml(product.id)}">下掉SKU</button>
+          <button class="mini-btn down-product" type="button" data-product-id="${escapeHtml(product.id)}">下架SKU</button>
         </div>
       </article>`;
   }
@@ -788,7 +788,7 @@
           <button class="btn edit-product" type="button" data-product-id="${escapeHtml(product.id)}">编辑数据</button>
           ${actual ? `<button class="btn locate-product" type="button" data-product-id="${escapeHtml(product.id)}">定位陈列图</button>` : ""}
           ${actual
-            ? `<button class="btn down-product" type="button" data-product-id="${escapeHtml(product.id)}">下掉SKU</button>`
+            ? `<button class="btn down-product" type="button" data-product-id="${escapeHtml(product.id)}">下架SKU</button>`
             : `<button class="btn place-product" type="button" data-product-id="${escapeHtml(product.id)}">加入目标层</button>`}
           <button class="btn btn-danger-ghost eliminate-product" type="button" data-product-id="${escapeHtml(product.id)}">淘汰SKU</button>
         </div>
@@ -812,7 +812,7 @@
           <span>品类：${escapeHtml(product.category)} / ${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</span>
           <span>尺寸：${integer(product.faceWidth)} × ${integer(product.depth)} × ${integer(product.height)} mm</span>
           <span>坑位：当前 ${currentPits}｜计划 ${Math.max(1, integer(product.plannedPits, 1))}</span>
-          <span>货架：${integer(product.shelfBoxes)} 箱｜周转 ${number(product.turnoverDays).toFixed(1)} 天</span>
+          <span>满陈：${integer(product.shelfBoxes)} 箱｜周转 ${number(product.turnoverDays).toFixed(1)} 天</span>
         </div>
         <div class="product-actions">
           <button class="btn locate-product" type="button" data-product-id="${escapeHtml(product.id)}">定位陈列图</button>
@@ -841,7 +841,7 @@
             <div><h3>${escapeHtml(product.name)}</h3><div class="sub">${escapeHtml(product.barcode)}\uff5c<span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div></div>
             <span class="badge state-unplaced">计划${Math.max(1, integer(product.plannedPits, 1))}坑</span>
           </div>
-          <div class="numbers">正面宽${integer(product.faceWidth)}mm｜货架${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
+          <div class="numbers">正面宽${integer(product.faceWidth)}mm｜满陈${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
           <div class="product-actions">
             <button class="btn place-product" type="button" data-product-id="${escapeHtml(product.id)}">加入目标层</button>
             <button class="btn replace-selected" type="button" data-product-id="${escapeHtml(product.id)}">替换选中SKU</button>
@@ -913,7 +913,7 @@
             坑位${local}/${summary.total}｜${pit.kind === "base" ? "基础" : "扩陈"}<br>
             ${escapeHtml(product.grade)}级｜${escapeHtml(product.thirdCategory || "未分类")}<br>
             ${integer(product.faceWidth)}×${integer(product.depth)}×${integer(product.height)}mm<br>
-            货架${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天
+            满陈${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天
           </div>`;
       }).join("");
       return `
@@ -1183,7 +1183,7 @@
       "一级品类": product.category, "二级品类": product.secondCategory, "三级品类": product.thirdCategory, "四级品类": product.fourthCategory,
       "SKU编码": product.barcode, "SKU名称": product.name, "等级": product.grade, "新品状态": product.newFlag,
       "长(mm)": integer(product.faceWidth), "宽(mm)": integer(product.depth), "高(mm)": integer(product.height),
-      "箱规(件/箱)": integer(product.packSize), "货架箱数": integer(product.shelfBoxes), "周转天数": number(product.turnoverDays),
+      "箱规(件/箱)": integer(product.packSize), "满陈箱数": integer(product.shelfBoxes), "周转天数": number(product.turnoverDays),
       "基础坑位": integer(product.basePits), "计划坑位": integer(product.plannedPits), "状态": product.status
     }));
     const layerRows = state.data.groups.flatMap(group => layers.map(layer => ({
