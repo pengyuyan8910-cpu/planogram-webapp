@@ -17,6 +17,7 @@
     dragHoverEl: null,
     dragHoverPit: null,
     dragHoverAfter: false,
+    dragOverviewOpen: false,
     lastMovedProductId: null,
     lastMoveLabel: "",
     lastMoveTimer: null
@@ -732,11 +733,11 @@
       const pits = layerData.pits.map((pit, index) => {
         const product = productById(pit.productId);
         if (!product) return "";
-        return `<div class="overview-pit" data-pit-id="${escapeHtml(pit.id)}" data-product-id="${escapeHtml(product.id)}" data-group-id="${escapeHtml(group.id)}" data-layer="${layer}" title="${escapeHtml(product.name)}｜坑位 ${index + 1}">${escapeHtml(product.name)}<small>${index + 1}</small></div>`;
+        return `<div class="overview-pit" draggable="true" data-pit-id="${escapeHtml(pit.id)}" data-product-id="${escapeHtml(product.id)}" data-group-id="${escapeHtml(group.id)}" data-layer="${layer}" title="${escapeHtml(product.name)}｜坑位 ${index + 1}">${escapeHtml(product.name)}<small>${index + 1}</small></div>`;
       }).join("");
       return `<section class="overview-row"><div class="overview-meta"><b>${escapeHtml(group.id)}-${layer}层</b><span>${layerData.pits.length} 坑</span></div><div class="overview-track" data-drop-group="${escapeHtml(group.id)}" data-drop-layer="${layer}">${pits || '<span class="overview-empty">空层：可放在这里</span>'}</div></section>`;
     }));
-    root.innerHTML = `<div class="drag-overview-head"><div><b>全局拖动视角</b><span>把 SKU 拖到目标 SKU 的左侧或右侧实线处，即可精准调整顺序。</span></div><span>当前拖动：${escapeHtml(productById(state.dragPayload?.productId)?.name || "SKU")}</span></div><div class="drag-overview-body">${rows.join("")}</div>`;
+    root.innerHTML = `<div class="drag-overview-head"><div><b>全局拖动视角</b><span>把 SKU 拖到目标 SKU 的左侧或右侧实线处，即可精准调整顺序。</span></div><div><span>当前拖动：${escapeHtml(productById(state.dragPayload?.productId)?.name || "未选择")}</span><button class="btn close-drag-overview" type="button">关闭</button></div></div><div class="drag-overview-body">${rows.join("")}</div>`;
     root.hidden = false;
   }
 
@@ -744,6 +745,18 @@
     const root = el("dragOverview");
     root.hidden = true;
     root.innerHTML = "";
+  }
+
+  function updateDragOverview(forceOpen = null) {
+    if (typeof forceOpen === "boolean") state.dragOverviewOpen = forceOpen;
+    const button = el("toggleDragOverviewBtn");
+    if (state.dragOverviewOpen) {
+      renderDragOverview();
+      button.textContent = "关闭全局拖动";
+    } else {
+      hideDragOverview();
+      button.textContent = "全局拖动模式";
+    }
   }
 
   function poolCard(product) {
@@ -873,6 +886,7 @@
     renderMetrics();
     renderGroups();
     renderSelectedSkuDetail();
+    updateDragOverview();
     renderTabs();
     renderTotalPool();
     renderUnplacedPool();
@@ -1041,7 +1055,7 @@
       return;
     }
 
-    const pit = event.target.closest(".pit");
+    const pit = event.target.closest(".pit, .overview-pit");
     if (pit && !event.target.closest("button")) {
       state.selectedProductId = pit.dataset.productId;
       state.selectedTarget = { groupId: pit.dataset.groupId, layer: pit.dataset.layer };
@@ -1061,6 +1075,7 @@
       [".restore-product", button => restoreProduct(button.dataset.productId)],
       [".replace-selected", button => replaceSelectedProduct(button.dataset.productId)],
       [".locate-product", button => locateProduct(button.dataset.productId)],
+      [".close-drag-overview", () => updateDragOverview(false)],
       [".edit-product", button => openEditor(button.dataset.productId)]
     ];
     for (const [selector, handler] of buttonMap) {
@@ -1074,7 +1089,7 @@
   }
 
   function handleDragStart(event) {
-    const pit = event.target.closest(".pit");
+    const pit = event.target.closest(".pit, .overview-pit");
     if (!pit) return;
     state.dragPayload = {
       productId: pit.dataset.productId,
@@ -1086,13 +1101,12 @@
     state.lastMoveTimer = null;
     state.lastMovedProductId = null;
     state.lastMoveLabel = "";
-    renderDragOverview();
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/json", JSON.stringify(state.dragPayload));
-    qsa(`.pit[data-product-id="${CSS.escape(pit.dataset.productId)}"]`).forEach(node => node.classList.add("dragging-block"));
+    qsa(`.pit[data-product-id="${CSS.escape(pit.dataset.productId)}"], .overview-pit[data-product-id="${CSS.escape(pit.dataset.productId)}"]`).forEach(node => node.classList.add("dragging-block"));
     const ghost = document.createElement("div");
     ghost.className = "drag-ghost";
-    ghost.textContent = `移动：${pit.querySelector("h4")?.textContent || "SKU"}`;
+    ghost.textContent = `移动：${pit.querySelector("h4")?.textContent || pit.textContent?.trim() || "SKU"}`;
     document.body.appendChild(ghost);
     event.dataTransfer.setDragImage(ghost, 18, 18);
     requestAnimationFrame(() => ghost.remove());
@@ -1104,7 +1118,7 @@
     state.dragHoverEl = null;
     state.dragHoverPit = null;
     state.dragHoverAfter = false;
-    hideDragOverview();
+    if (!state.dragOverviewOpen) hideDragOverview();
   }
 
   function handleDragOver(event) {
@@ -1190,6 +1204,7 @@
       renderAll();
     });
     el("zoomSelect").addEventListener("change", renderGroups);
+    el("toggleDragOverviewBtn").addEventListener("click", () => updateDragOverview(!state.dragOverviewOpen));
     el("totalSearch").addEventListener("input", renderTotalPool);
     el("exportPdfBtn").addEventListener("click", exportCurrentCategoryPdf);
     el("backupBtn").addEventListener("click", backupJson);
