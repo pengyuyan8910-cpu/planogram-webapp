@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>全品类可视化陈列系统</title>
+  <meta name="description" content="可拖拽、可维护产品池、支持未放入SKU替换、淘汰捞回和PDF导出的全品类陈列工具。">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">和县小市口生活馆</p>
+        <h1>全品类可视化陈列系统</h1>
+        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · PDF打印</p>
+      </div>
+      <div class="top-actions">
+        <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类PDF</button>
+        <button id="backupBtn" class="btn" type="button">备份数据JSON</button>
+        <label class="btn file-btn">导入数据JSON<input id="restoreInput" type="file" accept="application/json"></label>
+        <button id="resetBtn" class="btn btn-danger-ghost" type="button">恢复底表</button>
+      </div>
+    </header>
+
+    <section class="category-bar" aria-label="一级类目"></section>
+
+    <section class="metrics" aria-label="数据概览">
+      <article class="metric"><span>当前一级类目</span><strong id="metricCategory">—</strong></article>
+      <article class="metric"><span>总产品池</span><strong id="metricTotal">0</strong><small>货架＋未放入</small></article>
+      <article class="metric"><span>货架SKU</span><strong id="metricShelf">0</strong></article>
+      <article class="metric"><span>未放入SKU</span><strong id="metricUnplaced">0</strong></article>
+      <article class="metric"><span>淘汰SKU</span><strong id="metricEliminated">0</strong></article>
+      <article class="metric"><span>陈列坑位</span><strong id="metricPits">0</strong></article>
+    </section>
+
+    <div id="statusBar" class="status-bar" role="status" aria-live="polite">
+      点击货架层设置目标位置；拖动任一坑位可移动整个SKU模块。
+    </div>
+
+    <div class="workspace">
+      <main class="planogram-panel">
+        <div class="section-heading">
+          <div>
+            <h2>可视化陈列图</h2>
+            <p>每个正面独立显示。基础坑位为白色，扩陈坑位为浅蓝灰。</p>
+          </div>
+          <div class="selection-chips">
+            <span class="chip">目标：<b id="targetLabel">—</b></span>
+            <span class="chip">选中：<b id="selectedLabel">无</b></span>
+          </div>
+        </div>
+
+        <div class="planogram-toolbar">
+          <label>二级类目
+            <select id="secondaryFilter"></select>
+          </label>
+          <label>陈列图缩放
+            <select id="zoomSelect">
+              <option value="0.8">80%</option>
+              <option value="1" selected>100%</option>
+              <option value="1.15">115%</option>
+              <option value="1.3">130%</option>
+            </select>
+          </label>
+          <span class="legend"><i class="legend-base"></i>基础坑位</span>
+          <span class="legend"><i class="legend-expansion"></i>扩陈坑位</span>
+        </div>
+
+        <div id="groupsContainer" class="groups-container"></div>
+
+        <div id="singlePitRemoveZone" class="drop-zone">
+          将坑位拖到这里：仅减少该SKU的1个坑位；SKU全部下架请使用“下掉SKU”。
+        </div>
+      </main>
+
+      <aside class="pool-panel">
+        <nav class="pool-tabs" aria-label="产品池">
+          <button class="pool-tab active" type="button" data-panel="total">总产品池</button>
+          <button class="pool-tab" type="button" data-panel="unplaced">未放入SKU</button>
+          <button class="pool-tab" type="button" data-panel="eliminated">淘汰SKU</button>
+          <button class="pool-tab" type="button" data-panel="add">新增SKU</button>
+        </nav>
+
+        <section id="panel-total" class="pool-section active">
+          <label class="field">搜索总产品池
+            <input id="totalSearch" type="search" placeholder="品名、条码、二级/三级类目">
+          </label>
+          <p class="helper">计划坑位数默认取底表。修改后点击“应用”，货架长度与余量同步变化。</p>
+          <div id="totalPoolList" class="product-list"></div>
+        </section>
+
+        <section id="panel-unplaced" class="pool-section">
+          <p class="helper">未放入SKU没有货架坑位，但仍属于总产品池，可随时加入货架或替换已陈列SKU。</p>
+          <div id="unplacedList" class="product-list"></div>
+        </section>
+
+        <section id="panel-eliminated" class="pool-section">
+          <p class="helper">淘汰SKU不属于总产品池。商品数据完整保留，点击“捞回”后进入未放入SKU池。</p>
+          <div id="eliminatedList" class="product-list"></div>
+        </section>
+
+        <section id="panel-add" class="pool-section">
+          <div class="form-grid">
+            <label class="field field-span-2">SKU品名<input id="addName" type="text"></label>
+            <label class="field field-span-2">SKU条码<input id="addBarcode" type="text"></label>
+            <label class="field">二级类目<input id="addSecond" type="text"></label>
+            <label class="field">三级类目<input id="addThird" type="text"></label>
+            <label class="field">产品等级
+              <select id="addGrade"><option>A</option><option>B</option><option>C</option><option>D</option></select>
+            </label>
+            <label class="field">新品状态
+              <select id="addNewFlag"><option>新品</option><option selected>老品</option></select>
+            </label>
+            <label class="field">正面宽度mm<input id="addFaceWidth" type="number" min="1" value="360"></label>
+            <label class="field">深度mm<input id="addDepth" type="number" min="1" value="300"></label>
+            <label class="field">高度mm<input id="addHeight" type="number" min="1" value="260"></label>
+            <label class="field">货架箱数<input id="addShelfBoxes" type="number" min="0" value="1"></label>
+            <label class="field">周转天数<input id="addTurnover" type="number" min="0" step="0.1" value="6"></label>
+            <label class="field">基础坑位数<input id="addBasePits" type="number" min="1" max="20" value="1"></label>
+            <label class="field">计划坑位数<input id="addPlannedPits" type="number" min="1" max="20" value="1"></label>
+          </div>
+          <label class="check-row"><input id="addDirectly" type="checkbox"> 新增后立即放入当前目标层</label>
+          <button id="addSkuBtn" class="btn btn-primary btn-block" type="button">新增SKU</button>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <dialog id="editorDialog" class="editor-dialog">
+    <div class="dialog-header">
+      <div><p class="eyebrow">产品池数据维护</p><h2>编辑SKU</h2></div>
+      <button id="closeEditorBtn" class="icon-btn" type="button" aria-label="关闭">×</button>
+    </div>
+    <input id="editId" type="hidden">
+    <div class="form-grid">
+      <label class="field field-span-2">SKU品名<input id="editName" type="text"></label>
+      <label class="field field-span-2">SKU条码<input id="editBarcode" type="text"></label>
+      <label class="field">一级类目<select id="editCategory"></select></label>
+      <label class="field">二级类目<input id="editSecond" type="text"></label>
+      <label class="field">三级类目<input id="editThird" type="text"></label>
+      <label class="field">四级类目<input id="editFourth" type="text"></label>
+      <label class="field">等级<select id="editGrade"><option>A</option><option>B</option><option>C</option><option>D</option></select></label>
+      <label class="field">新品状态<select id="editNewFlag"><option>新品</option><option>老品</option></select></label>
+      <label class="field">正面宽度mm<input id="editFaceWidth" type="number" min="1"></label>
+      <label class="field">深度mm<input id="editDepth" type="number" min="1"></label>
+      <label class="field">高度mm<input id="editHeight" type="number" min="1"></label>
+      <label class="field">货架箱数<input id="editShelfBoxes" type="number" min="0"></label>
+      <label class="field">周转天数<input id="editTurnover" type="number" min="0" step="0.1"></label>
+      <label class="field">基础坑位数<input id="editBasePits" type="number" min="1" max="20"></label>
+      <label class="field">计划坑位数<input id="editPlannedPits" type="number" min="1" max="20"></label>
+    </div>
+    <div class="dialog-actions">
+      <button id="saveEditorBtn" class="btn btn-primary" type="button">保存并同步陈列图</button>
+      <button id="downEditorBtn" class="btn" type="button">下掉SKU</button>
+      <button id="eliminateEditorBtn" class="btn btn-danger-ghost" type="button">淘汰SKU</button>
+    </div>
+  </dialog>
+
+  <div id="pdfStaging" class="pdf-staging" aria-hidden="true"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="./data/initial-data.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
