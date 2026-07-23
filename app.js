@@ -15,6 +15,8 @@
     activePanel: "total",
     dragPayload: null,
     dragHoverEl: null,
+    dragHoverPit: null,
+    dragHoverAfter: false,
     lastMovedProductId: null,
     lastMoveLabel: "",
     lastMoveTimer: null
@@ -722,6 +724,28 @@
       : `<div class="empty">当前筛选下没有货架组。</div>`;
   }
 
+  function renderDragOverview() {
+    const root = el("dragOverview");
+    const groups = currentGroups();
+    const rows = groups.flatMap(group => layers.map(layer => {
+      const layerData = ensureGroupLayer(group, layer);
+      const pits = layerData.pits.map((pit, index) => {
+        const product = productById(pit.productId);
+        if (!product) return "";
+        return `<div class="overview-pit" data-pit-id="${escapeHtml(pit.id)}" data-product-id="${escapeHtml(product.id)}" data-group-id="${escapeHtml(group.id)}" data-layer="${layer}" title="${escapeHtml(product.name)}｜坑位 ${index + 1}">${escapeHtml(product.name)}<small>${index + 1}</small></div>`;
+      }).join("");
+      return `<section class="overview-row"><div class="overview-meta"><b>${escapeHtml(group.id)}-${layer}层</b><span>${layerData.pits.length} 坑</span></div><div class="overview-track" data-drop-group="${escapeHtml(group.id)}" data-drop-layer="${layer}">${pits || '<span class="overview-empty">空层：可放在这里</span>'}</div></section>`;
+    }));
+    root.innerHTML = `<div class="drag-overview-head"><div><b>全局拖动视角</b><span>把 SKU 拖到目标 SKU 的左侧或右侧实线处，即可精准调整顺序。</span></div><span>当前拖动：${escapeHtml(productById(state.dragPayload?.productId)?.name || "SKU")}</span></div><div class="drag-overview-body">${rows.join("")}</div>`;
+    root.hidden = false;
+  }
+
+  function hideDragOverview() {
+    const root = el("dragOverview");
+    root.hidden = true;
+    root.innerHTML = "";
+  }
+
   function poolCard(product) {
     const actual = actualPitCount(product.id);
     const stateName = productState(product);
@@ -1062,6 +1086,7 @@
     state.lastMoveTimer = null;
     state.lastMovedProductId = null;
     state.lastMoveLabel = "";
+    renderDragOverview();
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/json", JSON.stringify(state.dragPayload));
     qsa(`.pit[data-product-id="${CSS.escape(pit.dataset.productId)}"]`).forEach(node => node.classList.add("dragging-block"));
@@ -1075,38 +1100,55 @@
 
   function handleDragEnd(event) {
     event.target.closest(".pit")?.classList.remove("dragging");
-    qsa(".dragging-block, .drag-over, .drop-before").forEach(node => node.classList.remove("dragging-block", "drag-over", "drop-before"));
+    qsa(".dragging-block, .drag-over, .drop-before, .drop-after").forEach(node => node.classList.remove("dragging-block", "drag-over", "drop-before", "drop-after"));
     state.dragHoverEl = null;
+    state.dragHoverPit = null;
+    state.dragHoverAfter = false;
+    hideDragOverview();
   }
 
   function handleDragOver(event) {
-    const targetPit = event.target.closest(".pit");
-    const target = event.target.closest(".pit-track, #singlePitRemoveZone");
+    const targetPit = event.target.closest(".pit, .overview-pit");
+    const target = event.target.closest(".pit-track, #singlePitRemoveZone, .overview-track");
     if (!target && !targetPit) return;
     event.preventDefault();
     const activeTarget = target || targetPit.parentElement;
     if (state.dragHoverEl !== activeTarget) {
       state.dragHoverEl?.classList.remove("drag-over");
-      qsa(".drop-before").forEach(node => node.classList.remove("drop-before"));
       state.dragHoverEl = activeTarget;
       activeTarget?.classList.add("drag-over");
-      targetPit?.classList.add("drop-before");
+    }
+    const placeAfter = targetPit
+      ? event.clientX >= targetPit.getBoundingClientRect().left + targetPit.getBoundingClientRect().width / 2
+      : false;
+    if (state.dragHoverPit !== targetPit || state.dragHoverAfter !== placeAfter) {
+      qsa(".drop-before, .drop-after").forEach(node => node.classList.remove("drop-before", "drop-after"));
+      state.dragHoverPit = targetPit;
+      state.dragHoverAfter = placeAfter;
+      targetPit?.classList.add(placeAfter ? "drop-after" : "drop-before");
     }
     event.dataTransfer.dropEffect = "move";
   }
 
   function handleDragLeave(event) {
-    const leaving = event.target.closest(".pit-track, #singlePitRemoveZone");
+    const leaving = event.target.closest(".pit-track, #singlePitRemoveZone, .overview-track");
     if (leaving && !leaving.contains(event.relatedTarget)) {
       leaving.classList.remove("drag-over");
-      if (state.dragHoverEl === leaving) state.dragHoverEl = null;
+      if (state.dragHoverEl === leaving) {
+        state.dragHoverEl = null;
+        state.dragHoverPit = null;
+        state.dragHoverAfter = false;
+      }
     }
   }
 
   function handleDrop(event) {
     event.preventDefault();
-    qsa(".drag-over, .drop-before").forEach(node => node.classList.remove("drag-over", "drop-before"));
+    const dropAfter = state.dragHoverAfter;
+    qsa(".drag-over, .drop-before, .drop-after").forEach(node => node.classList.remove("drag-over", "drop-before", "drop-after"));
     state.dragHoverEl = null;
+    state.dragHoverPit = null;
+    state.dragHoverAfter = false;
     let payload = state.dragPayload;
     try {
       payload = JSON.parse(event.dataTransfer.getData("application/json")) || payload;
@@ -1118,11 +1160,13 @@
       return;
     }
 
-    const targetPit = event.target.closest(".pit");
-    const track = event.target.closest(".pit-track");
+    const targetPit = event.target.closest(".pit, .overview-pit");
+    const track = event.target.closest(".pit-track, .overview-track");
     const targetGroupId = targetPit?.dataset.groupId || track?.dataset.dropGroup;
     const targetLayer = targetPit?.dataset.layer || track?.dataset.dropLayer;
-    const beforePitId = targetPit?.dataset.pitId || null;
+    const beforePitId = dropAfter
+      ? targetPit.nextElementSibling?.dataset.pitId || null
+      : targetPit?.dataset.pitId || null;
     if (targetGroupId && targetLayer) {
       moveProductBlock(payload.productId, targetGroupId, targetLayer, beforePitId);
     }
