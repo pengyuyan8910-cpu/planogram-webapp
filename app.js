@@ -127,8 +127,12 @@
     return fields.some(field => String(product[field] ?? "") !== String(base[field] ?? ""));
   }
 
+  function filterBySecondary(products) {
+    return state.secondaryFilter === "??" ? products : products.filter(product => product.secondCategory === state.secondaryFilter);
+  }
+
   function activePool() {
-    return currentProducts(false);
+    return filterBySecondary(currentProducts(false));
   }
 
   function shelfProducts() {
@@ -140,7 +144,7 @@
   }
 
   function eliminatedProducts() {
-    return currentProducts(true).filter(product => product.status === "eliminated");
+    return filterBySecondary(currentProducts(true)).filter(product => product.status === "eliminated");
   }
 
   function layerUsed(group, layer) {
@@ -1104,27 +1108,12 @@
     return state.data.collaboration?.resetPasswordHash || initialData.collaboration?.resetPasswordHash || "";
   }
 
-  async function resetToBottomTable() {
-    const expectedHash = currentResetPasswordHash();
-    if (!expectedHash) {
-      setStatus("恢复底表密码尚未设置，请由底表管理员先在“底表管理员”中设置并同步。", true);
-      return;
-    }
-    const password = window.prompt("请输入恢复底表密码：");
-    if (password === null) return;
-    if (await sha256(password) !== expectedHash) {
-      setStatus("恢复底表密码不正确，已取消初始化。", true);
-      return;
-    }
-    if (!window.confirm("密码验证通过。确认恢复到 GitHub 最新底表？浏览器中的人工调整将被清除。")) return;
-    state.data = clone(initialData);
-    state.currentCategory = initialData.categories[0] || "";
-    state.secondaryFilter = "全部";
-    state.selectedProductId = null;
-    state.selectedTarget = null;
-    saveState();
-    renderAll();
-    setStatus("已恢复到最后同步的底表数据。");
+  function resetToBottomTable() { el("restorePasswordInput").value = ""; el("resetConfirmDialog").showModal(); }
+  async function confirmResetToCloud() {
+    if (el("restorePasswordInput").value !== "666888") { setStatus("\u6062\u590d\u5bc6\u7801\u4e0d\u6b63\u786e\u3002", true); return; }
+    el("resetConfirmDialog").close();
+    await pullCloudData();
+    setStatus("\u5df2\u6062\u590d\u4e3a\u6700\u65b0\u4e91\u7aef\u5e95\u8868\u3002");
   }
 
   function utf8ToBase64(value) {
@@ -1177,6 +1166,12 @@
       button.disabled = false;
       button.textContent = "同步至 GitHub 底表";
     }
+  }
+
+  async function exportCloudExcel() {
+    if (!await requireCloudSession()) return;
+    await pullCloudData();
+    exportBaseExcel();
   }
 
   function exportBaseExcel() {
@@ -1527,7 +1522,7 @@
     el("cloudPullBtn").addEventListener("click", pullCloudData);
     el("cloudPushBtn").addEventListener("click", pushCloudData);
     el("cloudDialog").addEventListener("click", event => { if (event.target === el("cloudDialog")) el("cloudDialog").close(); });
-    el("adminSyncBtn").addEventListener("click", openAdminDialog);
+    el("exportCloudExcelBtn").addEventListener("click", exportCloudExcel);
     el("closeAdminBtn").addEventListener("click", closeAdminDialog);
     el("changeImportInput").addEventListener("change", event => importChangePackage(event.target.files?.[0]));
     el("setResetPasswordBtn").addEventListener("click", setResetPassword);
@@ -1537,6 +1532,9 @@
     el("backupBtn").addEventListener("click", backupJson);
     el("restoreInput").addEventListener("change", event => importJson(event.target.files?.[0]));
     el("resetBtn").addEventListener("click", resetToBottomTable);
+    el("confirmResetBtn").addEventListener("click", confirmResetToCloud);
+    el("cancelResetBtn").addEventListener("click", () => el("resetConfirmDialog").close());
+    el("closeResetDialogBtn").addEventListener("click", () => el("resetConfirmDialog").close());
     el("addSkuBtn").addEventListener("click", addNewProduct);
 
     el("closeEditorBtn").addEventListener("click", closeEditor);
