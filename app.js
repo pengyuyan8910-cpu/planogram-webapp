@@ -754,6 +754,32 @@
       </article>`;
   }
 
+  function renderSelectedSkuDetail() {
+    const root = el("selectedSkuDetail");
+    const product = productById(state.selectedProductId);
+    if (!product) {
+      root.innerHTML = '<div class="selected-sku-empty">点击陈列图中的 SKU，可在此查看详细信息。</div>';
+      return;
+    }
+    const currentPits = actualPitCount(product.id);
+    root.innerHTML = `
+      <article class="selected-sku-card">
+        <div class="selected-sku-title"><span>当前选中 SKU</span><b>陈列图已选中</b></div>
+        <h3>${escapeHtml(product.name)}</h3>
+        <p>${escapeHtml(product.barcode)}｜${escapeHtml(product.grade)}级｜${escapeHtml(product.newFlag || "老品")}</p>
+        <div class="selected-sku-grid">
+          <span>品类：${escapeHtml(product.category)} / ${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</span>
+          <span>尺寸：${integer(product.faceWidth)} × ${integer(product.depth)} × ${integer(product.height)} mm</span>
+          <span>坑位：当前 ${currentPits}｜计划 ${Math.max(1, integer(product.plannedPits, 1))}</span>
+          <span>货架：${integer(product.shelfBoxes)} 箱｜周转 ${number(product.turnoverDays).toFixed(1)} 天</span>
+        </div>
+        <div class="product-actions">
+          <button class="btn locate-product" type="button" data-product-id="${escapeHtml(product.id)}">定位陈列图</button>
+          <button class="btn edit-product" type="button" data-product-id="${escapeHtml(product.id)}">编辑数据</button>
+        </div>
+      </article>`;
+  }
+
   function renderTotalPool() {
     const query = el("totalSearch").value.trim().toLowerCase();
     const list = activePool().filter(product => (
@@ -822,6 +848,7 @@
     renderSecondaryFilter();
     renderMetrics();
     renderGroups();
+    renderSelectedSkuDetail();
     renderTabs();
     renderTotalPool();
     renderUnplacedPool();

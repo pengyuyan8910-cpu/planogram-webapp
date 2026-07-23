@@ -77,6 +77,12 @@ h2{font-size:18px}
 .pit .mini-actions{display:flex;gap:4px;margin-top:7px}
 .mini-btn{border:1px solid var(--border);background:rgba(255,255,255,.7);border-radius:6px;padding:4px 6px;font-size:11px}
 .drop-zone{border:1px dashed var(--border);border-radius:10px;padding:14px;text-align:center;color:var(--muted);font-size:13px;margin-top:12px}
+.selected-sku-detail{margin-bottom:12px}
+.selected-sku-empty{padding:10px;border:1px dashed var(--border);border-radius:10px;background:var(--panel-soft);color:var(--muted);font-size:12px;line-height:1.45}
+.selected-sku-card{padding:11px;border:2px solid #1f6feb;border-radius:11px;background:#f1f7ff;box-shadow:0 5px 14px rgba(31,111,235,.11)}
+.selected-sku-title{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px;color:#1f6feb;font-size:12px;font-weight:700}.selected-sku-title b{color:#067647}
+.selected-sku-card h3{font-size:15px;line-height:1.35}.selected-sku-card p{margin-top:4px;color:var(--muted);font-size:12px}
+.selected-sku-grid{display:grid;gap:4px;margin-top:8px;color:#344054;font-size:12px;line-height:1.4}
 .pool-tabs{display:grid;grid-template-columns:repeat(4,1fr);gap:5px;border-bottom:1px solid var(--border);padding-bottom:10px}
 .pool-tab{padding:8px 5px;font-size:12px}
 .pool-section{display:none;margin-top:12px}.pool-section.active{display:block}
