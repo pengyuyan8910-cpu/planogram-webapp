@@ -1405,6 +1405,7 @@
     "sb_publishable_Ag_V4yognAYPcN9kpV-_cg_QgP5QC4Z"
   );
   let cloudRevision = 0;
+  let cloudBaseData = null;
 
   function cloudNote(message, error = false) {
     const node = el("cloudSyncStatus");
@@ -1451,15 +1452,48 @@
     if (error) return cloudNote(error.message, true);
     if (!data) { cloudRevision = 0; return cloudNote("云端尚未初始化。请仓库拥有者确认本地数据后点“保存至云端”创建首版底表。"); }
     if (!data.payload?.products || !data.payload?.groups) return cloudNote("云端数据结构异常。", true);
-    state.data = data.payload; cloudRevision = data.revision; state.currentCategory = state.data.categories?.[0] || ""; state.selectedProductId = null; state.selectedTarget = null; saveState(); renderAll();
+    state.data = data.payload; cloudRevision = data.revision; cloudBaseData = clone(data.payload); state.currentCategory = state.data.categories?.[0] || ""; state.selectedProductId = null; state.selectedTarget = null; saveState(); renderAll();
     cloudNote("已拉取云端第 " + data.revision + " 版（" + new Date(data.updated_at).toLocaleString("zh-CN") + "）。");
   }
+  const sameCloudValue = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  function mergeCloudRecord(base, local, remote, label, conflicts) {
+    if (sameCloudValue(local, base)) return remote;
+    if (sameCloudValue(remote, base)) return local;
+    if (sameCloudValue(local, remote)) return local;
+    conflicts.push(label); return remote;
+  }
+  function mergeCloudGroups(base, local, remote, label, conflicts) {
+    if (!base || !local || !remote) return mergeCloudRecord(base, local, remote, label, conflicts);
+    const merged = { ...remote }, baseMeta = { ...base, layers: undefined }, localMeta = { ...local, layers: undefined }, remoteMeta = { ...remote, layers: undefined };
+    Object.assign(merged, mergeCloudRecord(baseMeta, localMeta, remoteMeta, label, conflicts)); merged.layers = { ...remote.layers };
+    layers.forEach(layer => { merged.layers[layer] = mergeCloudRecord(base.layers?.[layer], local.layers?.[layer], remote.layers?.[layer], label + "-" + layer, conflicts); });
+    return merged;
+  }
+  function mergeCloudList(baseList, localList, remoteList, label, merger, conflicts) {
+    const map = list => new Map((list || []).map(item => [item.id, item])); const base = map(baseList), local = map(localList), remote = map(remoteList);
+    const ids = [...(remoteList || []).map(x => x.id), ...(localList || []).map(x => x.id).filter(id => !remote.has(id))];
+    return ids.map(id => merger(base.get(id), local.get(id), remote.get(id), label + " " + id, conflicts));
+  }
+  async function autoMergeCloudConflict() {
+    const { data: remote, error } = await cloudClient.from("planogram_documents").select("payload,revision").eq("id", "main").maybeSingle();
+    if (error || !remote) return cloudNote(error?.message || "\u65e0\u6cd5\u8bfb\u53d6\u4e91\u7aef\u6700\u65b0\u7248\u672c。", true);
+    const conflicts = [], merged = clone(remote.payload);
+    merged.categories = [...new Set([...(remote.payload.categories || []), ...(state.data.categories || [])])];
+    merged.products = mergeCloudList((cloudBaseData || remote.payload).products, state.data.products, remote.payload.products, "SKU", mergeCloudRecord, conflicts);
+    merged.groups = mergeCloudList((cloudBaseData || remote.payload).groups, state.data.groups, remote.payload.groups, "\u8d27\u67b6\u7ec4", mergeCloudGroups, conflicts);
+    if (conflicts.length) return cloudNote("\u53d1\u73b0\u540c\u6761\u6570\u636e\u51b2\u7a81：" + conflicts.slice(0,3).join("、") + "。\u672c\u5730\u4fee\u6539\u4ecd\u4fdd\u7559，\u8bf7\u6838\u5bf9\u540e\u518d\u4fdd\u5b58。", true);
+    const { data, error: saveError } = await cloudClient.rpc("save_planogram_document", { p_payload: merged, p_expected_revision: remote.revision });
+    if (saveError) return cloudNote(saveError.message, true);
+    state.data = merged; cloudBaseData = clone(merged); cloudRevision = (Array.isArray(data) ? data[0] : data)?.revision || remote.revision + 1; saveState(); renderAll();
+    cloudNote("\u7cfb\u7edf\u5df2\u81ea\u52a8\u5408\u5e76\u4e0d\u540c\u4fee\u6539\u5e76\u4fdd\u5b58\u4e3a\u7b2c " + cloudRevision + " \u7248。");
+  }
+
   async function pushCloudData() {
     if (!await requireCloudSession()) return;
     cloudNote("正在保存至云端…");
     const { data, error } = await cloudClient.rpc("save_planogram_document", { p_payload: state.data, p_expected_revision: cloudRevision });
-    if (error) return cloudNote(error.message.includes("云端") ? "云端已被其他成员更新，请先拉取最新版本再保存。" : error.message, true);
-    const row = Array.isArray(data) ? data[0] : data; cloudRevision = row?.revision || cloudRevision + 1; saveState(); cloudNote("已保存至云端第 " + cloudRevision + " 版。");
+    if (error) { if (error.code === "P0001") return autoMergeCloudConflict(); return cloudNote(error.message, true); }
+    const row = Array.isArray(data) ? data[0] : data; cloudRevision = row?.revision || cloudRevision + 1; cloudBaseData = clone(state.data); saveState(); cloudNote("已保存至云端第 " + cloudRevision + " 版。");
   }
 
   function initializeControls() {
