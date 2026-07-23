@@ -672,7 +672,7 @@
         <h4>${escapeHtml(product.name)}</h4>
         <div class="pit-index">坑位 ${localIndex}/${samePits.length}</div>
         <div class="pit-kind">${kindText}</div>
-        <div class="meta">${escapeHtml(product.grade)}级｜${escapeHtml(product.thirdCategory || "未分类")}</div>
+        <div class="meta"><span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.thirdCategory || "\u672a\u5206\u7c7b")}</div>
         <div class="meta">${integer(product.faceWidth)}×${integer(product.depth)}×${integer(product.height)}mm</div>
         <div class="meta">货架${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
         <div class="mini-actions">
@@ -769,7 +769,7 @@
         <div class="product-title-row">
           <div>
             <h3>${escapeHtml(product.name)}</h3>
-            <div class="sub">${escapeHtml(product.barcode)}｜${escapeHtml(product.grade)}级｜${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div>
+            <div class="sub">${escapeHtml(product.barcode)}\uff5c<span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div>
           </div>
           <span class="badge ${stateClass}">${stateLabel}</span>
         </div>
@@ -803,7 +803,7 @@
       <article class="selected-sku-card">
         <div class="selected-sku-title"><span>当前选中 SKU</span><b>陈列图已选中</b></div>
         <h3>${escapeHtml(product.name)}</h3>
-        <p>${escapeHtml(product.barcode)}｜${escapeHtml(product.grade)}级｜${escapeHtml(product.newFlag || "老品")}</p>
+        <p>${escapeHtml(product.barcode)}\uff5c<span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>" : "<span class=\"sku-old\">\u8001\u54c1</span>"}</p>
         <div class="selected-sku-grid">
           <span>品类：${escapeHtml(product.category)} / ${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</span>
           <span>尺寸：${integer(product.faceWidth)} × ${integer(product.depth)} × ${integer(product.height)} mm</span>
@@ -834,7 +834,7 @@
       ? list.map(product => `
         <article class="product-card">
           <div class="product-title-row">
-            <div><h3>${escapeHtml(product.name)}</h3><div class="sub">${escapeHtml(product.barcode)}｜${escapeHtml(product.grade)}级｜${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div></div>
+            <div><h3>${escapeHtml(product.name)}</h3><div class="sub">${escapeHtml(product.barcode)}\uff5c<span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div></div>
             <span class="badge state-unplaced">计划${Math.max(1, integer(product.plannedPits, 1))}坑</span>
           </div>
           <div class="numbers">正面宽${integer(product.faceWidth)}mm｜货架${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
@@ -854,7 +854,7 @@
       ? list.map(product => `
         <article class="product-card">
           <div class="product-title-row">
-            <div><h3>${escapeHtml(product.name)}</h3><div class="sub">${escapeHtml(product.barcode)}｜${escapeHtml(product.grade)}级｜${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div></div>
+            <div><h3>${escapeHtml(product.name)}</h3><div class="sub">${escapeHtml(product.barcode)}\uff5c<span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</div></div>
             <span class="badge state-eliminated">淘汰</span>
           </div>
           <div class="numbers">历史计划${Math.max(1, integer(product.plannedPits, 1))}坑｜正面宽${integer(product.faceWidth)}mm｜周转${number(product.turnoverDays).toFixed(1)}天</div>

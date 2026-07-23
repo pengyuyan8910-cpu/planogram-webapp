@@ -81,6 +81,11 @@ h2{font-size:18px}
 .pit .pit-index{font-weight:700;color:var(--accent)}
 .pit .pit-kind{font-weight:700}
 .pit .meta{color:#475467;margin-top:3px}
+.sku-grade{font-weight:800;color:#172033}
+.sku-new{font-weight:800;color:#d92d20}
+.sku-old{font-weight:600;color:#667085}
+
+
 .pit .mini-actions{display:flex;gap:4px;margin-top:7px}
 .mini-btn{border:1px solid var(--border);background:rgba(255,255,255,.7);border-radius:6px;padding:4px 6px;font-size:11px}
 .drop-zone{border:1px dashed var(--border);border-radius:10px;padding:14px;text-align:center;color:var(--muted);font-size:13px;margin-top:12px}
