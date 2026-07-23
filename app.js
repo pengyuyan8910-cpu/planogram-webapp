@@ -1512,7 +1512,6 @@
     el("toggleDragOverviewBtn").addEventListener("click", () => updateDragOverview(!state.dragOverviewOpen));
     el("totalSearch").addEventListener("input", renderTotalPool);
     el("exportPdfBtn").addEventListener("click", exportCurrentCategoryPdf);
-    el("exportChangesBtn").addEventListener("click", exportChangePackage);
     el("cloudBtn").addEventListener("click", openCloudDialog);
     el("closeCloudBtn").addEventListener("click", () => el("cloudDialog").close());
     el("cloudSignUpBtn").addEventListener("click", cloudSignUp);
