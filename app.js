@@ -13,7 +13,10 @@
     selectedTarget: null,
     selectedProductId: null,
     activePanel: "total",
-    dragPayload: null
+    dragPayload: null,
+    dragHoverEl: null,
+    lastMovedProductId: null,
+    lastMoveLabel: ""
   };
 
   const el = id => document.getElementById(id);
@@ -104,6 +107,19 @@
 
   function actualPitCount(productId) {
     return allPitsForProduct(productId).length;
+  }
+
+  function placementSummary(productId) {
+    const grouped = new Map();
+    allPitsForProduct(productId).forEach(item => {
+      const key = item.groupId + "-" + item.layer;
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(item.index + 1);
+    });
+    if (!grouped.size) return "未放入陈列图";
+    return [...grouped.entries()]
+      .map(([position, indexes]) => position + "层｜坑位" + indexes.join("、"))
+      .join("；");
   }
 
   function productState(product) {
@@ -329,10 +345,10 @@
   function moveProductBlock(productId, targetGroupId, targetLayer, beforePitId = null) {
     const product = productById(productId);
     const targetGroup = groupById(targetGroupId);
-    if (!product || !targetGroup) return;
+    if (!product || !targetGroup) return false;
 
     const placements = allPitsForProduct(productId);
-    if (!placements.length) return;
+    if (!placements.length) return false;
 
     const sourceBlock = placements.map(item => item.pit);
     const releasedWidth = placements
@@ -342,7 +358,7 @@
     const check = validatePlacement(product, targetGroup, targetLayer, sourceBlock.length, releasedWidth);
     if (!check.ok) {
       setStatus(check.message, true);
-      return;
+      return false;
     }
 
     removeProductPits(productId);
@@ -355,9 +371,17 @@
     targetData.pits.splice(insertionIndex, 0, ...sourceBlock);
     normalizeProductBlock(targetGroup, targetLayer, productId);
     state.selectedTarget = { groupId: targetGroupId, layer: targetLayer };
+    state.selectedProductId = productId;
+    state.lastMovedProductId = productId;
+    state.lastMoveLabel = `${targetGroupId}-${targetLayer}层`;
     saveState();
     renderAll();
-    setStatus(`${product.name}的${sourceBlock.length}个坑位已整体移动到${targetGroupId}-${targetLayer}层。`);
+    requestAnimationFrame(() => {
+      const moved = qs(`.pit[data-product-id="${CSS.escape(productId)}"]`);
+      moved?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+    });
+    setStatus(`已移动：${product.name}的${sourceBlock.length}个坑位已整体移动到${targetGroupId}-${targetLayer}层，并以“刚移动”标记显示。`);
+    return true;
   }
 
   function replaceSelectedProduct(newProductId) {
@@ -598,13 +622,14 @@
       : `【扩陈】${kindIndex}/${kindTotal}`;
 
     return `
-      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""}"
+      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedProductId === product.id ? "just-moved" : ""}"
         style="--face-width:${Math.max(80, integer(product.faceWidth, 100))}"
         draggable="true"
         data-pit-id="${escapeHtml(pit.id)}"
         data-product-id="${escapeHtml(product.id)}"
         data-group-id="${escapeHtml(group.id)}"
         data-layer="${layer}">
+        ${state.lastMovedProductId === product.id ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
         <h4>${escapeHtml(product.name)}</h4>
         <div class="pit-index">坑位 ${localIndex}/${samePits.length}</div>
         <div class="pit-kind">${kindText}</div>
@@ -676,6 +701,7 @@
           <span class="badge ${stateClass}">${stateLabel}</span>
         </div>
         <div class="numbers">当前坑位 <b>${actual}</b>｜正面宽${integer(product.faceWidth)}mm｜周转${number(product.turnoverDays).toFixed(1)}天</div>
+        <div class="location-info">陈列图位置：${escapeHtml(placementSummary(product.id))}</div>
         <div class="plan-control">
           <label class="field">计划坑位数
             <input class="planned-input" type="number" min="1" max="20" value="${Math.max(1, integer(product.plannedPits, 1))}" data-product-id="${escapeHtml(product.id)}">
@@ -968,30 +994,53 @@
       groupId: pit.dataset.groupId,
       layer: pit.dataset.layer
     };
+    state.lastMovedProductId = null;
+    state.lastMoveLabel = "";
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/json", JSON.stringify(state.dragPayload));
-    pit.classList.add("dragging");
+    qsa(`.pit[data-product-id="${CSS.escape(pit.dataset.productId)}"]`).forEach(node => node.classList.add("dragging-block"));
+    const ghost = document.createElement("div");
+    ghost.className = "drag-ghost";
+    ghost.textContent = `移动：${pit.querySelector("h4")?.textContent || "SKU"}`;
+    document.body.appendChild(ghost);
+    event.dataTransfer.setDragImage(ghost, 18, 18);
+    requestAnimationFrame(() => ghost.remove());
   }
 
   function handleDragEnd(event) {
     event.target.closest(".pit")?.classList.remove("dragging");
-    qsa(".drag-over").forEach(node => node.classList.remove("drag-over"));
+    qsa(".dragging-block, .drag-over, .drop-before").forEach(node => node.classList.remove("dragging-block", "drag-over", "drop-before"));
+    state.dragHoverEl = null;
   }
 
   function handleDragOver(event) {
-    const target = event.target.closest(".pit-track, #singlePitRemoveZone, .pit");
-    if (!target) return;
+    const targetPit = event.target.closest(".pit");
+    const target = event.target.closest(".pit-track, #singlePitRemoveZone");
+    if (!target && !targetPit) return;
     event.preventDefault();
-    target.classList.add("drag-over");
+    const activeTarget = target || targetPit.parentElement;
+    if (state.dragHoverEl !== activeTarget) {
+      state.dragHoverEl?.classList.remove("drag-over");
+      qsa(".drop-before").forEach(node => node.classList.remove("drop-before"));
+      state.dragHoverEl = activeTarget;
+      activeTarget?.classList.add("drag-over");
+      targetPit?.classList.add("drop-before");
+    }
+    event.dataTransfer.dropEffect = "move";
   }
 
   function handleDragLeave(event) {
-    event.target.closest(".pit-track, #singlePitRemoveZone, .pit")?.classList.remove("drag-over");
+    const leaving = event.target.closest(".pit-track, #singlePitRemoveZone");
+    if (leaving && !leaving.contains(event.relatedTarget)) {
+      leaving.classList.remove("drag-over");
+      if (state.dragHoverEl === leaving) state.dragHoverEl = null;
+    }
   }
 
   function handleDrop(event) {
     event.preventDefault();
-    qsa(".drag-over").forEach(node => node.classList.remove("drag-over"));
+    qsa(".drag-over, .drop-before").forEach(node => node.classList.remove("drag-over", "drop-before"));
+    state.dragHoverEl = null;
     let payload = state.dragPayload;
     try {
       payload = JSON.parse(event.dataTransfer.getData("application/json")) || payload;
