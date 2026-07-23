@@ -110,18 +110,6 @@
     return allPitsForProduct(productId).length;
   }
 
-  function placementSummary(productId) {
-    const grouped = new Map();
-    allPitsForProduct(productId).forEach(item => {
-      const key = item.groupId + "-" + item.layer;
-      if (!grouped.has(key)) grouped.set(key, []);
-      grouped.get(key).push(item.index + 1);
-    });
-    if (!grouped.size) return "未放入陈列图";
-    return [...grouped.entries()]
-      .map(([position, indexes]) => position + "层｜坑位" + indexes.join("、"))
-      .join("；");
-  }
 
   function productState(product) {
     if (product.status === "eliminated") return "eliminated";
@@ -227,6 +215,7 @@
     const product = productById(productId);
     if (!product) return;
     const count = Math.max(1, Math.min(20, integer(requestedCount, product.plannedPits || 1)));
+    if (product.plannedPits !== count) product.dataChanged = true;
     product.plannedPits = count;
     const placements = allPitsForProduct(productId);
 
@@ -434,6 +423,28 @@
     setStatus(`${newProduct.name}已替换${oldProduct.name}，沿用${count}个坑位；原SKU自动进入未放入池。`);
   }
 
+  function locateProduct(productId) {
+    const placement = firstPlacement(productId);
+    if (!placement) {
+      setStatus("该SKU当前未放入陈列图，无法定位。", true);
+      return;
+    }
+    const group = groupById(placement.groupId);
+    if (!group) return;
+    state.currentCategory = group.category;
+    state.secondaryFilter = "全部";
+    state.selectedProductId = productId;
+    state.selectedTarget = { groupId: placement.groupId, layer: placement.layer };
+    renderAll();
+    requestAnimationFrame(() => {
+      const pits = qsa(`.pit[data-product-id="${CSS.escape(productId)}"]`);
+      pits.forEach(pit => pit.classList.add("locating"));
+      pits[0]?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      window.setTimeout(() => pits.forEach(pit => pit.classList.remove("locating")), 2_500);
+    });
+    setStatus("已定位到该SKU在陈列图中的位置。");
+  }
+
   function openEditor(productId) {
     const product = productById(productId);
     if (!product) return;
@@ -466,6 +477,7 @@
     if (!product) return;
 
     const previousCategory = product.category;
+    const previousValues = JSON.stringify({ name: product.name, barcode: product.barcode, category: product.category, second: product.secondCategory, third: product.thirdCategory, fourth: product.fourthCategory, grade: product.grade, newFlag: product.newFlag, faceWidth: product.faceWidth, depth: product.depth, height: product.height, shelfBoxes: product.shelfBoxes, turnoverDays: product.turnoverDays, basePits: product.basePits, plannedPits: product.plannedPits });
     const nextCategory = el("editCategory").value;
 
     product.name = el("editName").value.trim() || product.name;
@@ -485,6 +497,8 @@
 
     const planned = Math.max(1, integer(el("editPlannedPits").value, product.plannedPits));
     product.plannedPits = planned;
+    const nextValues = JSON.stringify({ name: product.name, barcode: product.barcode, category: product.category, second: product.secondCategory, third: product.thirdCategory, fourth: product.fourthCategory, grade: product.grade, newFlag: product.newFlag, faceWidth: product.faceWidth, depth: product.depth, height: product.height, shelfBoxes: product.shelfBoxes, turnoverDays: product.turnoverDays, basePits: product.basePits, plannedPits: product.plannedPits });
+    if (previousValues !== nextValues) product.dataChanged = true;
 
     if (previousCategory !== nextCategory) {
       removeProductPits(product.id);
@@ -562,6 +576,7 @@
       plannedPits,
       status: "active",
       sourceState: "new",
+      dataChanged: true,
       specialDisplay: "",
       singleFaceCapacity: 1,
       depthCount: 1,
@@ -634,7 +649,7 @@
       : `【扩陈】${kindIndex}/${kindTotal}`;
 
     return `
-      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedProductId === product.id ? "just-moved" : ""}"
+      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedProductId === product.id ? "just-moved" : ""} ${product.dataChanged ? "data-changed" : ""}"
         style="--face-width:${Math.max(80, integer(product.faceWidth, 100))}"
         draggable="true"
         data-pit-id="${escapeHtml(pit.id)}"
@@ -642,6 +657,7 @@
         data-group-id="${escapeHtml(group.id)}"
         data-layer="${layer}">
         ${state.lastMovedProductId === product.id ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
+        ${product.dataChanged ? `<span class="data-badge">数据已调整</span>` : ""}
         <h4>${escapeHtml(product.name)}</h4>
         <div class="pit-index">坑位 ${localIndex}/${samePits.length}</div>
         <div class="pit-kind">${kindText}</div>
@@ -713,7 +729,6 @@
           <span class="badge ${stateClass}">${stateLabel}</span>
         </div>
         <div class="numbers">当前坑位 <b>${actual}</b>｜正面宽${integer(product.faceWidth)}mm｜周转${number(product.turnoverDays).toFixed(1)}天</div>
-        <div class="location-info">陈列图位置：${escapeHtml(placementSummary(product.id))}</div>
         <div class="plan-control">
           <label class="field">计划坑位数
             <input class="planned-input" type="number" min="1" max="20" value="${Math.max(1, integer(product.plannedPits, 1))}" data-product-id="${escapeHtml(product.id)}">
@@ -722,6 +737,7 @@
         </div>
         <div class="product-actions">
           <button class="btn edit-product" type="button" data-product-id="${escapeHtml(product.id)}">编辑数据</button>
+          ${actual ? `<button class="btn locate-product" type="button" data-product-id="${escapeHtml(product.id)}">定位陈列图</button>` : ""}
           ${actual
             ? `<button class="btn down-product" type="button" data-product-id="${escapeHtml(product.id)}">下掉SKU</button>`
             : `<button class="btn place-product" type="button" data-product-id="${escapeHtml(product.id)}">加入目标层</button>`}
@@ -985,6 +1001,7 @@
       [".eliminate-product", button => eliminateProduct(button.dataset.productId)],
       [".restore-product", button => restoreProduct(button.dataset.productId)],
       [".replace-selected", button => replaceSelectedProduct(button.dataset.productId)],
+      [".locate-product", button => locateProduct(button.dataset.productId)],
       [".edit-product", button => openEditor(button.dataset.productId)]
     ];
     for (const [selector, handler] of buttonMap) {

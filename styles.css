@@ -61,9 +61,14 @@ h2{font-size:18px}
 .pit.dragging,.pit.dragging-block{opacity:.35;transform:scale(.96);cursor:grabbing}
 .pit.drop-before{box-shadow:-4px 0 0 var(--accent),0 4px 12px rgba(31,111,235,.15)}
 .pit.just-moved{outline:3px solid #f59e0b;outline-offset:2px;background:#fff8e6;box-shadow:0 8px 18px rgba(180,83,9,.2);animation:move-pulse 1.45s ease-in-out 2}
-.move-badge{display:inline-flex;align-items:center;max-width:100%;margin:0 0 6px;padding:3px 6px;border-radius:999px;background:#f59e0b;color:#fff;font-size:10px;font-weight:700;white-space:nowrap}
+.pit.data-changed{outline:3px solid #7c3aed;outline-offset:2px;background:#f5f0ff;box-shadow:0 8px 18px rgba(124,58,237,.2)}
+.pit.locating{animation:locate-pulse .8s ease-in-out 3}
+.move-badge,.data-badge{display:inline-flex;align-items:center;max-width:100%;margin:0 0 6px;padding:3px 6px;border-radius:999px;color:#fff;font-size:10px;font-weight:700;white-space:nowrap}
+.move-badge{background:#f59e0b}
+.data-badge{background:#7c3aed}
 .drag-ghost{position:fixed;top:-1000px;left:-1000px;z-index:9999;max-width:240px;padding:8px 11px;border-radius:8px;background:#1f6feb;color:#fff;font-size:12px;font-weight:700;box-shadow:0 7px 18px rgba(16,24,40,.24);pointer-events:none}
 @keyframes move-pulse{50%{transform:translateY(-2px);box-shadow:0 10px 22px rgba(180,83,9,.34)}}
+@keyframes locate-pulse{50%{transform:scale(1.03);box-shadow:0 0 0 5px rgba(31,111,235,.25)}}
 .pit h4{font-size:13px;margin:0 0 5px;white-space:normal}
 .pit .pit-index{font-weight:700;color:var(--accent)}
 .pit .pit-kind{font-weight:700}
@@ -85,7 +90,6 @@ h2{font-size:18px}
 .product-card h3{font-size:14px}
 .product-card .sub{font-size:12px;color:var(--muted);margin-top:3px}
 .product-card .numbers{font-size:12px;margin-top:6px}
-.location-info{margin-top:6px;padding:6px 8px;border-left:3px solid var(--accent);border-radius:4px;background:#edf5ff;color:#244062;font-size:12px;font-weight:700;line-height:1.45;word-break:break-word}
 .product-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .plan-control{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end;margin-top:8px}
 .plan-control input{width:100%;border:1px solid var(--border);border-radius:7px;padding:7px}
