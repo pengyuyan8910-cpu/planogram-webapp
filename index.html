@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>全品类可视化陈列系统</title>
   <meta name="description" content="可拖拽、可维护产品池、支持未放入SKU替换、淘汰捞回和PDF导出的全品类陈列工具。">
-  <link rel="stylesheet" href="./styles.css?v=2026.07.23.11">
+  <link rel="stylesheet" href="./styles.css?v=2026.07.23.12">
 </head>
 <body>
   <div class="app-shell">
@@ -14,12 +14,12 @@
       <div>
         <p class="eyebrow">和县小市口生活馆</p>
         <h1>全品类可视化陈列系统</h1>
-        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · PDF打印 <span class="app-version">版本 v2026.07.23.11</span></p>
+        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · PDF打印 <span class="app-version">版本 v2026.07.23.12</span></p>
       </div>
       <div class="top-actions">
         <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类PDF</button>
         <button id="exportChangesBtn" class="btn" type="button">导出本次修改</button>
-        <button id="cloudBtn" class="btn btn-primary" type="button">????</button>
+        <button id="cloudBtn" class="btn btn-primary" type="button">&#20113;&#31471;&#21327;&#20316;</button>
         <button id="adminSyncBtn" class="btn btn-primary" type="button">底表管理员</button>
         <button id="backupBtn" class="btn" type="button">备份数据JSON</button>
         <label class="btn file-btn">导入数据JSON<input id="restoreInput" type="file" accept="application/json"></label>
@@ -199,19 +199,10 @@
   </dialog>
 
   <dialog id="cloudDialog" class="editor-dialog admin-dialog">
-    <div class="dialog-header"><div><p class="eyebrow">????</p><h2>??????</h2></div><button id="closeCloudBtn" class="icon-btn" type="button">?</button></div>
-    <div id="cloudAccountStatus" class="admin-note">???????????</div>
-    <section class="admin-section">
-      <h3>1. ?????</h3><p>???????????/???????????????????</p>
-      <label class="field">??<input id="cloudEmail" type="email" autocomplete="email" placeholder="name@example.com"></label>
-      <label class="field">??<input id="cloudPassword" type="password" minlength="8" autocomplete="current-password" placeholder="?? 8 ?"></label>
-      <div class="dialog-actions"><button id="cloudSignInBtn" class="btn btn-primary" type="button">??</button><button id="cloudSignUpBtn" class="btn" type="button">??</button><button id="cloudSignOutBtn" class="btn btn-danger-ghost" type="button">????</button></div>
-    </section>
-    <section class="admin-section">
-      <h3>2. ?????</h3><p>??????????????????????????????????????????</p>
-      <div class="dialog-actions"><button id="cloudPullBtn" class="btn" type="button">??????</button><button id="cloudPushBtn" class="btn btn-primary" type="button">?????</button></div>
-      <div id="cloudSyncStatus" class="admin-note">????????</div>
-    </section>
+    <div class="dialog-header"><div><p class="eyebrow">&#22810;&#20154;&#21327;&#20316;</p><h2>&#20113;&#31471;&#25968;&#25454;&#21327;&#20316;</h2></div><button id="closeCloudBtn" class="icon-btn" type="button">&times;</button></div>
+    <div id="cloudAccountStatus" class="admin-note">&#23578;&#26410;&#30331;&#24405;&#20113;&#31471;&#21327;&#20316;&#36134;&#21495;&#12290;</div>
+    <section class="admin-section"><h3>1. &#30331;&#24405;&#25110;&#27880;&#20876;</h3><p>&#20351;&#29992;&#30333;&#21517;&#21333;&#20869;&#30340;&#37038;&#31665;&#27880;&#20876;&#25110;&#30331;&#24405;&#12290;</p><label class="field">Email<input id="cloudEmail" type="email" autocomplete="email" placeholder="name@example.com"></label><label class="field">Password<input id="cloudPassword" type="password" minlength="8" autocomplete="current-password" placeholder="8+ characters"></label><div class="dialog-actions"><button id="cloudSignInBtn" class="btn btn-primary" type="button">&#30331;&#24405;</button><button id="cloudSignUpBtn" class="btn" type="button">&#27880;&#20876;</button><button id="cloudSignOutBtn" class="btn btn-danger-ghost" type="button">&#36864;&#20986;&#30331;&#24405;</button></div></section>
+    <section class="admin-section"><h3>2. &#25289;&#21462;&#19982;&#20445;&#23384;</h3><p>&#20808;&#25289;&#21462;&#26368;&#26032;&#20113;&#31471;&#29256;&#26412;&#65292;&#20462;&#25913;&#21518;&#20445;&#23384;&#12290;&#33509;&#26377;&#20854;&#20182;&#25104;&#21592;&#24050;&#26356;&#26032;&#65292;&#35831;&#20808;&#25289;&#21462;&#20877;&#20445;&#23384;&#12290;</p><div class="dialog-actions"><button id="cloudPullBtn" class="btn" type="button">&#25289;&#21462;&#20113;&#31471;&#25968;&#25454;</button><button id="cloudPushBtn" class="btn btn-primary" type="button">&#20445;&#23384;&#33267;&#20113;&#31471;</button></div><div id="cloudSyncStatus" class="admin-note">&#31561;&#24453;&#30331;&#24405;&#21518;&#25805;&#20316;&#12290;</div></section>
   </dialog>
 
   <div id="pdfStaging" class="pdf-staging" aria-hidden="true"></div>
@@ -220,7 +211,7 @@
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./data/initial-data.js?v=2026.07.23.11"></script>
-  <script src="./app.js?v=2026.07.23.11"></script>
+  <script src="./data/initial-data.js?v=2026.07.23.12"></script>
+  <script src="./app.js?v=2026.07.23.12"></script>
 </body>
 </html>
