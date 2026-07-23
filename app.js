@@ -1400,6 +1400,61 @@
     }
   }
 
+  const cloudClient = window.supabase?.createClient(
+    "https://msggutmpzihjqcfglsxs.supabase.co",
+    "sb_publishable_Ag_V4yognAYPcN9kpV-_cg_QgP5QC4Z"
+  );
+  let cloudRevision = 0;
+
+  function cloudNote(message, error = false) {
+    const node = el("cloudSyncStatus");
+    if (node) { node.textContent = message; node.classList.toggle("error", error); }
+  }
+  function cloudAccountNote(message, error = false) {
+    const node = el("cloudAccountStatus");
+    if (node) { node.textContent = message; node.classList.toggle("error", error); }
+  }
+  async function refreshCloudAccount() {
+    if (!cloudClient) { cloudAccountNote("云端组件加载失败。", true); return null; }
+    const { data: { session } } = await cloudClient.auth.getSession();
+    if (session?.user) cloudAccountNote("已登录：" + session.user.email + "。");
+    else cloudAccountNote("尚未登录云端协作账号。");
+    return session;
+  }
+  async function openCloudDialog() { el("cloudDialog").showModal(); await refreshCloudAccount(); }
+  async function cloudSignUp() {
+    const email = el("cloudEmail").value.trim(), password = el("cloudPassword").value;
+    if (!email || password.length < 8) return cloudNote("请填写邮箱和至少 8 位密码。", true);
+    const { error } = await cloudClient.auth.signUp({ email, password });
+    if (error) return cloudNote(error.message, true);
+    cloudNote("注册成功，请前往邮箱完成验证，再登录。");
+  }
+  async function cloudSignIn() {
+    const email = el("cloudEmail").value.trim(), password = el("cloudPassword").value;
+    const { error } = await cloudClient.auth.signInWithPassword({ email, password });
+    if (error) return cloudNote(error.message, true);
+    await refreshCloudAccount(); cloudNote("登录成功，请先拉取云端数据。");
+  }
+  async function cloudSignOut() { await cloudClient.auth.signOut(); cloudRevision = 0; await refreshCloudAccount(); cloudNote("已退出云端账号。"); }
+  async function requireCloudSession() { const session = await refreshCloudAccount(); if (!session) { cloudNote("请先登录云端协作账号。", true); return null; } return session; }
+  async function pullCloudData() {
+    if (!await requireCloudSession()) return;
+    cloudNote("正在拉取云端数据…");
+    const { data, error } = await cloudClient.from("planogram_documents").select("payload,revision,updated_at").eq("id", "main").maybeSingle();
+    if (error) return cloudNote(error.message, true);
+    if (!data) { cloudRevision = 0; return cloudNote("云端尚未初始化。请仓库拥有者确认本地数据后点“保存至云端”创建首版底表。"); }
+    if (!data.payload?.products || !data.payload?.groups) return cloudNote("云端数据结构异常。", true);
+    state.data = data.payload; cloudRevision = data.revision; state.currentCategory = state.data.categories?.[0] || ""; state.selectedProductId = null; state.selectedTarget = null; saveState(); renderAll();
+    cloudNote("已拉取云端第 " + data.revision + " 版（" + new Date(data.updated_at).toLocaleString("zh-CN") + "）。");
+  }
+  async function pushCloudData() {
+    if (!await requireCloudSession()) return;
+    cloudNote("正在保存至云端…");
+    const { data, error } = await cloudClient.rpc("save_planogram_document", { p_payload: state.data, p_expected_revision: cloudRevision });
+    if (error) return cloudNote(error.message.includes("云端") ? "云端已被其他成员更新，请先拉取最新版本再保存。" : error.message, true);
+    const row = Array.isArray(data) ? data[0] : data; cloudRevision = row?.revision || cloudRevision + 1; saveState(); cloudNote("已保存至云端第 " + cloudRevision + " 版。");
+  }
+
   function initializeControls() {
     el("editCategory").innerHTML = categories()
       .map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`)
@@ -1422,6 +1477,14 @@
     el("totalSearch").addEventListener("input", renderTotalPool);
     el("exportPdfBtn").addEventListener("click", exportCurrentCategoryPdf);
     el("exportChangesBtn").addEventListener("click", exportChangePackage);
+    el("cloudBtn").addEventListener("click", openCloudDialog);
+    el("closeCloudBtn").addEventListener("click", () => el("cloudDialog").close());
+    el("cloudSignUpBtn").addEventListener("click", cloudSignUp);
+    el("cloudSignInBtn").addEventListener("click", cloudSignIn);
+    el("cloudSignOutBtn").addEventListener("click", cloudSignOut);
+    el("cloudPullBtn").addEventListener("click", pullCloudData);
+    el("cloudPushBtn").addEventListener("click", pushCloudData);
+    el("cloudDialog").addEventListener("click", event => { if (event.target === el("cloudDialog")) el("cloudDialog").close(); });
     el("adminSyncBtn").addEventListener("click", openAdminDialog);
     el("closeAdminBtn").addEventListener("click", closeAdminDialog);
     el("changeImportInput").addEventListener("change", event => importChangePackage(event.target.files?.[0]));
