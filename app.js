@@ -116,6 +116,14 @@
     return actualPitCount(product.id) > 0 ? "onShelf" : "unplaced";
   }
 
+  function hasDataChange(product) {
+    if (product.dataChanged) return true;
+    const base = initialData.products.find(item => item.id === product.id);
+    if (!base) return product.sourceState === "new";
+    const fields = ["name", "barcode", "category", "secondCategory", "thirdCategory", "fourthCategory", "grade", "newFlag", "faceWidth", "depth", "height", "shelfBoxes", "turnoverDays", "basePits", "plannedPits"];
+    return fields.some(field => String(product[field] ?? "") !== String(base[field] ?? ""));
+  }
+
   function activePool() {
     return currentProducts(false);
   }
@@ -649,7 +657,7 @@
       : `【扩陈】${kindIndex}/${kindTotal}`;
 
     return `
-      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedProductId === product.id ? "just-moved" : ""} ${product.dataChanged ? "data-changed" : ""}"
+      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedProductId === product.id ? "just-moved" : ""} ${hasDataChange(product) ? "data-changed" : ""}"
         style="--face-width:${Math.max(80, integer(product.faceWidth, 100))}"
         draggable="true"
         data-pit-id="${escapeHtml(pit.id)}"
@@ -657,7 +665,7 @@
         data-group-id="${escapeHtml(group.id)}"
         data-layer="${layer}">
         ${state.lastMovedProductId === product.id ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
-        ${product.dataChanged ? `<span class="data-badge">数据已调整</span>` : ""}
+        ${hasDataChange(product) ? `<span class="data-badge">数据已调整</span>` : ""}
         <h4>${escapeHtml(product.name)}</h4>
         <div class="pit-index">坑位 ${localIndex}/${samePits.length}</div>
         <div class="pit-kind">${kindText}</div>
