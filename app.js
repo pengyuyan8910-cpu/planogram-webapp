@@ -109,6 +109,22 @@
     return output;
   }
 
+  function boxesPerPit(product, layer = null) {
+    const actualLayer = layer || allPitsForProduct(product.id)[0]?.layer || "";
+    const capacity = actualLayer === "A"
+      ? (product.singleFaceCapacity || product.depthCount)
+      : product.depthCount;
+    return Math.max(1, integer(capacity, 1));
+  }
+  function requiredPits(product, layer = null) {
+    return Math.max(1, Math.ceil(integer(product.shelfBoxes, 0) / boxesPerPit(product, layer)));
+  }
+  function fullDisplayText(product, layer = null) {
+    const pits = actualPitCount(product.id) || integer(product.plannedPits, 1);
+    const each = boxesPerPit(product, layer);
+    return "\u6ee1\u9648" + integer(product.shelfBoxes) + "\u7bb1\uff5c\u5751\u4f4d" + pits + "\uff5c\u6bcf\u5751\u7eb5\u6df1" + each + "\u7bb1\uff5c\u53ef\u5bb9\u7eb3" + (pits * each) + "\u7bb1";
+  }
+
   function actualPitCount(productId) {
     return allPitsForProduct(productId).length;
   }
@@ -510,8 +526,7 @@
     product.turnoverDays = Math.max(0, number(el("editTurnover").value, 0));
     product.basePits = Math.max(1, integer(el("editBasePits").value, 1));
 
-    const planned = Math.max(1, integer(el("editPlannedPits").value, product.plannedPits));
-    product.plannedPits = planned;
+    product.plannedPits = requiredPits(product);
     const nextValues = JSON.stringify({ name: product.name, barcode: product.barcode, category: product.category, second: product.secondCategory, third: product.thirdCategory, fourth: product.fourthCategory, grade: product.grade, newFlag: product.newFlag, faceWidth: product.faceWidth, depth: product.depth, height: product.height, shelfBoxes: product.shelfBoxes, turnoverDays: product.turnoverDays, basePits: product.basePits, plannedPits: product.plannedPits });
     if (previousValues !== nextValues) product.dataChanged = true;
 
@@ -528,9 +543,11 @@
       return;
     }
 
+    const needsPitSync = actualPitCount(product.id) > 0 && actualPitCount(product.id) !== product.plannedPits;
     saveState();
     closeEditor();
-    applyPlannedPits(product.id, planned);
+    if (needsPitSync) applyPlannedPits(product.id, product.plannedPits);
+    else renderAll();
 
     const overflow = state.data.groups
       .filter(group => group.category === state.currentCategory)
@@ -674,11 +691,11 @@
         ${state.lastMovedProductId === product.id ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
         ${hasDataChange(product) ? `<span class="data-badge">数据已调整</span>` : ""}
         <h4>${escapeHtml(product.name)}</h4>
-        <div class="pit-index">坑位 ${localIndex}/${samePits.length}</div>
+        <div class="pit-index">\u5751\u4f4d ${localIndex}/${samePits.length}\uff5c\u6bcf\u5751\u7eb5\u6df1${boxesPerPit(product, layer)}\u7bb1</div>
         <div class="pit-kind">${kindText}</div>
         <div class="meta"><span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.thirdCategory || "\u672a\u5206\u7c7b")}</div>
-        <div class="meta">${integer(product.faceWidth)}×${integer(product.depth)}×${integer(product.height)}mm</div>
-        <div class="meta">满陈${integer(product.shelfBoxes)}箱｜周转${number(product.turnoverDays).toFixed(1)}天</div>
+        <div class="meta">${fullDisplayText(product, layer)}\uff5c\u5468\u8f6c${number(product.turnoverDays).toFixed(1)}\u5929</div>
+        <div class="meta">${integer(product.faceWidth)}\u00d7${integer(product.depth)}\u00d7${integer(product.height)}mm</div>
         <div class="mini-actions">
           <button class="mini-btn edit-product" type="button" data-product-id="${escapeHtml(product.id)}">编辑</button>
           <button class="mini-btn down-product" type="button" data-product-id="${escapeHtml(product.id)}">下架SKU</button>
@@ -777,9 +794,9 @@
           </div>
           <span class="badge ${stateClass}">${stateLabel}</span>
         </div>
-        <div class="numbers">当前坑位 <b>${actual}</b>｜正面宽${integer(product.faceWidth)}mm｜周转${number(product.turnoverDays).toFixed(1)}天</div>
+        <div class="numbers">${fullDisplayText(product)}\uff5c\u6b63\u9762\u5bbd${integer(product.faceWidth)}mm\uff5c\u5468\u8f6c${number(product.turnoverDays).toFixed(1)}\u5929</div>
         <div class="plan-control">
-          <label class="field">计划坑位数
+          <label class="field">\u8ba1\u5212\u5751\u4f4d\u6570\uff08\u6ee1\u9648\u7bb1\u6570\u4fee\u6539\u540e\u81ea\u52a8\u8ba1\u7b97\uff09
             <input class="planned-input" type="number" min="1" max="20" value="${Math.max(1, integer(product.plannedPits, 1))}" data-product-id="${escapeHtml(product.id)}">
           </label>
           <button class="btn apply-planned" type="button" data-product-id="${escapeHtml(product.id)}">应用</button>
@@ -811,8 +828,8 @@
         <div class="selected-sku-grid">
           <span>品类：${escapeHtml(product.category)} / ${escapeHtml(product.secondCategory)} / ${escapeHtml(product.thirdCategory)}</span>
           <span>尺寸：${integer(product.faceWidth)} × ${integer(product.depth)} × ${integer(product.height)} mm</span>
-          <span>坑位：当前 ${currentPits}｜计划 ${Math.max(1, integer(product.plannedPits, 1))}</span>
-          <span>满陈：${integer(product.shelfBoxes)} 箱｜周转 ${number(product.turnoverDays).toFixed(1)} 天</span>
+          <span>\u5f53\u524d\u5751\u4f4d ${currentPits}\uff5c\u8ba1\u5212 ${Math.max(1, integer(product.plannedPits, 1))}</span>
+          <span>${fullDisplayText(product)}\uff5c\u5468\u8f6c ${number(product.turnoverDays).toFixed(1)} \u5929</span>
         </div>
         <div class="product-actions">
           <button class="btn locate-product" type="button" data-product-id="${escapeHtml(product.id)}">定位陈列图</button>
@@ -1110,10 +1127,39 @@
 
   function resetToBottomTable() { el("restorePasswordInput").value = ""; el("resetConfirmDialog").showModal(); }
   async function confirmResetToCloud() {
-    if (el("restorePasswordInput").value !== "666888") { setStatus("\u6062\u590d\u5bc6\u7801\u4e0d\u6b63\u786e\u3002", true); return; }
+    if (el("restorePasswordInput").value !== "666888") {
+      setStatus("\u6062\u590d\u5bc6\u7801\u4e0d\u6b63\u786e\u3002", true);
+      return;
+    }
+    if (!await requireCloudSession()) return;
+    const { data: remote, error: readError } = await cloudClient
+      .from("planogram_documents")
+      .select("revision")
+      .eq("id", "main")
+      .maybeSingle();
+    if (readError) return cloudNote(readError.message, true);
+    const expectedRevision = remote?.revision || 0;
+    const restored = clone(initialData);
+    const { data, error } = await cloudClient.rpc("save_planogram_document", {
+      p_payload: restored,
+      p_expected_revision: expectedRevision
+    });
+    if (error) {
+      if (error.code === "P0001") return cloudNote("\u4e91\u7aef\u6570\u636e\u5df2\u88ab\u66f4\u65b0\uff0c\u8bf7\u5148\u62c9\u53d6\u6700\u65b0\u7248\u540e\u518d\u6062\u590d\u3002", true);
+      return cloudNote(error.message, true);
+    }
+    state.data = restored;
+    cloudBaseData = clone(restored);
+    const row = Array.isArray(data) ? data[0] : data;
+    cloudRevision = row?.revision || expectedRevision + 1;
+    state.currentCategory = state.data.categories?.[0] || "";
+    state.selectedProductId = null;
+    state.selectedTarget = null;
+    saveState();
+    renderAll();
     el("resetConfirmDialog").close();
-    await pullCloudData();
-    setStatus("\u5df2\u6062\u590d\u4e3a\u6700\u65b0\u4e91\u7aef\u5e95\u8868\u3002");
+    setStatus("\u5df2\u6062\u590d\u4e3a\u9996\u7248\u5e95\u8868\u5185\u5bb9\uff0c\u5e76\u8986\u76d6\u4fdd\u5b58\u5230\u4e91\u7aef\u3002");
+    cloudNote("\u9996\u7248\u5e95\u8868\u5df2\u4fdd\u5b58\u4e3a\u4e91\u7aef\u7b2c " + cloudRevision + " \u7248\u3002");
   }
 
   function utf8ToBase64(value) {
