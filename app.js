@@ -1425,9 +1425,16 @@
   async function cloudSignUp() {
     const email = el("cloudEmail").value.trim(), password = el("cloudPassword").value;
     if (!email || password.length < 8) return cloudNote("请填写邮箱和至少 8 位密码。", true);
-    const { error } = await cloudClient.auth.signUp({ email, password });
+    const { error } = await cloudClient.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin + window.location.pathname } });
     if (error) return cloudNote(error.message, true);
     cloudNote("注册成功，请前往邮箱完成验证，再登录。");
+  }
+  async function cloudResendVerification() {
+    const email = el("cloudEmail").value.trim();
+    if (!email) return cloudNote("\u8bf7\u5148\u586b\u5199\u90ae\u7bb1\u3002", true);
+    const { error } = await cloudClient.auth.resend({ type: "signup", email, options: { emailRedirectTo: window.location.origin + window.location.pathname } });
+    if (error) return cloudNote(error.message, true);
+    cloudNote("\u9a8c\u8bc1\u90ae\u4ef6\u5df2\u91cd\u65b0\u53d1\u9001\uff0c\u8bf7\u67e5\u6536\u90ae\u7bb1\u548c\u5783\u573e\u90ae\u4ef6\u5939\u3002");
   }
   async function cloudSignIn() {
     const email = el("cloudEmail").value.trim(), password = el("cloudPassword").value;
@@ -1480,6 +1487,7 @@
     el("cloudBtn").addEventListener("click", openCloudDialog);
     el("closeCloudBtn").addEventListener("click", () => el("cloudDialog").close());
     el("cloudSignUpBtn").addEventListener("click", cloudSignUp);
+    el("cloudResendBtn").addEventListener("click", cloudResendVerification);
     el("cloudSignInBtn").addEventListener("click", cloudSignIn);
     el("cloudSignOutBtn").addEventListener("click", cloudSignOut);
     el("cloudPullBtn").addEventListener("click", pullCloudData);
