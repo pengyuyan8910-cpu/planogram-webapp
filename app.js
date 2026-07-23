@@ -4,7 +4,7 @@
   const STORAGE_KEY = "planogram-webapp-state-v1";
   const layers = ["D", "C", "B", "A"];
   const clone = value => JSON.parse(JSON.stringify(value));
-  const initialData = clone(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] });
+  let initialData = clone(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] });
 
   const state = {
     data: loadState(),
@@ -981,6 +981,232 @@
     }
   }
 
+
+  function sameRecord(left, right) {
+    return JSON.stringify(left || null) === JSON.stringify(right || null);
+  }
+
+  function buildChangePackage() {
+    const baseProducts = new Map(initialData.products.map(product => [product.id, product]));
+    const baseGroups = new Map(initialData.groups.map(group => [group.id, group]));
+    const products = state.data.products.filter(product => !sameRecord(product, baseProducts.get(product.id)));
+    const groups = state.data.groups.filter(group => !sameRecord(group, baseGroups.get(group.id)));
+    return {
+      type: "planogram-change-package",
+      schemaVersion: 1,
+      baseVersion: initialData.version || "unknown",
+      createdAt: new Date().toISOString(),
+      categories: state.data.categories,
+      changes: { products, groups }
+    };
+  }
+
+  function downloadJson(value, filename) {
+    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  function exportChangePackage() {
+    const changePackage = buildChangePackage();
+    const productCount = changePackage.changes.products.length;
+    const groupCount = changePackage.changes.groups.length;
+    if (!productCount && !groupCount) {
+      setStatus("当前没有相对底表的修改，无需导出变更包。", true);
+      return;
+    }
+    downloadJson(changePackage, "陈列变更包_" + new Date().toISOString().slice(0, 10) + ".json");
+    setStatus("已导出变更包：" + productCount + " 个SKU记录、" + groupCount + " 个货架组记录。请交给底表管理员导入。");
+  }
+
+  function setAdminNote(id, message, isError = false) {
+    const note = el(id);
+    if (!note) return;
+    note.textContent = message;
+    note.classList.toggle("error", isError);
+  }
+
+  function openAdminDialog() {
+    el("adminSyncDialog").showModal();
+    const sync = state.data.lastGithubSyncAt ? "上次同步：" + state.data.lastGithubSyncAt : "未同步。本地修改仅保存在当前浏览器。";
+    setAdminNote("githubSyncStatus", sync);
+  }
+
+  function closeAdminDialog() {
+    const dialog = el("adminSyncDialog");
+    if (dialog.open) dialog.close();
+  }
+
+  async function importChangePackage(file) {
+    if (!file) return;
+    try {
+      const changePackage = JSON.parse(await file.text());
+      if (changePackage.type !== "planogram-change-package" || !changePackage.changes || !Array.isArray(changePackage.changes.products) || !Array.isArray(changePackage.changes.groups)) {
+        throw new Error("这不是有效的陈列变更包");
+      }
+      const baseProducts = new Map(initialData.products.map(product => [product.id, product]));
+      const currentProducts = new Map(state.data.products.map(product => [product.id, product]));
+      const baseGroups = new Map(initialData.groups.map(group => [group.id, group]));
+      const currentGroups = new Map(state.data.groups.map(group => [group.id, group]));
+      const conflicts = [
+        ...changePackage.changes.products.filter(product => baseProducts.has(product.id) && currentProducts.has(product.id) && !sameRecord(currentProducts.get(product.id), baseProducts.get(product.id)) && !sameRecord(currentProducts.get(product.id), product)),
+        ...changePackage.changes.groups.filter(group => baseGroups.has(group.id) && currentGroups.has(group.id) && !sameRecord(currentGroups.get(group.id), baseGroups.get(group.id)) && !sameRecord(currentGroups.get(group.id), group))
+      ];
+      const summary = "即将导入 " + changePackage.changes.products.length + " 个SKU记录、" + changePackage.changes.groups.length + " 个货架组记录" + (conflicts.length ? "；发现 " + conflicts.length + " 项与当前本地数据冲突" : "") + "。确认继续吗？";
+      if (!window.confirm(summary)) return;
+      changePackage.changes.products.forEach(product => {
+        const index = state.data.products.findIndex(item => item.id === product.id);
+        if (index >= 0) state.data.products[index] = product;
+        else state.data.products.push(product);
+      });
+      changePackage.changes.groups.forEach(group => {
+        const index = state.data.groups.findIndex(item => item.id === group.id);
+        if (index >= 0) state.data.groups[index] = group;
+        else state.data.groups.push(group);
+      });
+      state.data.categories = [...new Set([...(state.data.categories || []), ...(changePackage.categories || [])])];
+      saveState();
+      renderAll();
+      const note = "已导入变更包：" + changePackage.changes.products.length + " 个SKU、" + changePackage.changes.groups.length + " 个货架组" + (conflicts.length ? "；已按你的确认覆盖 " + conflicts.length + " 项冲突" : "") + "。";
+      setAdminNote("changeImportStatus", note, false);
+      setStatus(note + "请继续同步至 GitHub 底表。");
+    } catch (error) {
+      setAdminNote("changeImportStatus", "导入失败：" + error.message, true);
+      setStatus("变更包导入失败：" + error.message, true);
+    } finally {
+      el("changeImportInput").value = "";
+    }
+  }
+
+  async function sha256(value) {
+    const encoded = new TextEncoder().encode(value);
+    const digest = await crypto.subtle.digest("SHA-256", encoded);
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function setResetPassword() {
+    const password = el("resetPasswordInput").value;
+    if (password.length < 6) {
+      setStatus("恢复底表密码至少需要 6 位。", true);
+      return;
+    }
+    state.data.collaboration = { ...(state.data.collaboration || {}), resetPasswordHash: await sha256(password) };
+    el("resetPasswordInput").value = "";
+    saveState();
+    setAdminNote("githubSyncStatus", "恢复密码已保存到本地，请点击“同步至 GitHub 底表”后对所有协作人员生效。");
+    setStatus("恢复底表密码已设置；同步到 GitHub 后才会成为协作底表规则。");
+  }
+
+  function currentResetPasswordHash() {
+    return state.data.collaboration?.resetPasswordHash || initialData.collaboration?.resetPasswordHash || "";
+  }
+
+  async function resetToBottomTable() {
+    const expectedHash = currentResetPasswordHash();
+    if (!expectedHash) {
+      setStatus("恢复底表密码尚未设置，请由底表管理员先在“底表管理员”中设置并同步。", true);
+      return;
+    }
+    const password = window.prompt("请输入恢复底表密码：");
+    if (password === null) return;
+    if (await sha256(password) !== expectedHash) {
+      setStatus("恢复底表密码不正确，已取消初始化。", true);
+      return;
+    }
+    if (!window.confirm("密码验证通过。确认恢复到 GitHub 最新底表？浏览器中的人工调整将被清除。")) return;
+    state.data = clone(initialData);
+    state.currentCategory = initialData.categories[0] || "";
+    state.secondaryFilter = "全部";
+    state.selectedProductId = null;
+    state.selectedTarget = null;
+    saveState();
+    renderAll();
+    setStatus("已恢复到最后同步的底表数据。");
+  }
+
+  function utf8ToBase64(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = "";
+    bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary);
+  }
+
+  async function syncToGithubBase() {
+    const token = el("githubTokenInput").value.trim();
+    if (!token) {
+      setAdminNote("githubSyncStatus", "请输入 GitHub 细粒度令牌后再同步。", true);
+      return;
+    }
+    const button = el("syncGithubBtn");
+    button.disabled = true;
+    button.textContent = "正在同步…";
+    try {
+      const api = "https://api.github.com/repos/pengyuyan8910-cpu/planogram-webapp/contents/data/initial-data.js";
+      const headers = { Accept: "application/vnd.github+json", Authorization: "Bearer " + token, "X-GitHub-Api-Version": "2022-11-28" };
+      const existingResponse = await fetch(api + "?ref=main", { headers });
+      if (!existingResponse.ok) throw new Error("无法读取 GitHub 底表（" + existingResponse.status + "）");
+      const existing = await existingResponse.json();
+      const nextData = clone(state.data);
+      nextData.version = "github-" + new Date().toISOString();
+      nextData.source = "小程序管理员同步";
+      nextData.lastGithubSyncAt = new Date().toLocaleString("zh-CN");
+      const content = "window.PLANOGRAM_INITIAL_DATA = " + JSON.stringify(nextData) + ";\n";
+      const updateResponse = await fetch(api, {
+        method: "PUT",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "同步小程序底表 " + new Date().toLocaleString("zh-CN"), content: utf8ToBase64(content), sha: existing.sha, branch: "main" })
+      });
+      if (!updateResponse.ok) {
+        const detail = await updateResponse.json().catch(() => ({}));
+        throw new Error(detail.message || "GitHub 写入失败（" + updateResponse.status + "）");
+      }
+      initialData = clone(nextData);
+      state.data = nextData;
+      saveState();
+      el("githubTokenInput").value = "";
+      const note = "同步成功：GitHub 已提交最新底表，Pages 通常在约 1 分钟后更新。";
+      setAdminNote("githubSyncStatus", note);
+      setStatus(note);
+    } catch (error) {
+      setAdminNote("githubSyncStatus", "同步失败：" + error.message, true);
+      setStatus("同步至 GitHub 失败：" + error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = "同步至 GitHub 底表";
+    }
+  }
+
+  function exportBaseExcel() {
+    if (!window.XLSX) {
+      setStatus("Excel 导出组件未加载，请检查网络后重试。", true);
+      return;
+    }
+    const products = state.data.products.map(product => ({
+      "一级品类": product.category, "二级品类": product.secondCategory, "三级品类": product.thirdCategory, "四级品类": product.fourthCategory,
+      "SKU编码": product.barcode, "SKU名称": product.name, "等级": product.grade, "新品状态": product.newFlag,
+      "长(mm)": integer(product.faceWidth), "宽(mm)": integer(product.depth), "高(mm)": integer(product.height),
+      "箱规(件/箱)": integer(product.packSize), "货架箱数": integer(product.shelfBoxes), "周转天数": number(product.turnoverDays),
+      "基础坑位": integer(product.basePits), "计划坑位": integer(product.plannedPits), "状态": product.status
+    }));
+    const layerRows = state.data.groups.flatMap(group => layers.map(layer => ({
+      "一级品类": group.category, "二级品类": group.secondCategory, "货架组": group.id, "货架类型": group.type,
+      "层级": layer, "容量(mm)": integer(ensureGroupLayer(group, layer).capacity), "已用(mm)": layerUsed(group, layer), "余量(mm)": layerRemaining(group, layer), "坑位数": ensureGroupLayer(group, layer).pits.length
+    })));
+    const placements = state.data.groups.flatMap(group => layers.flatMap(layer => ensureGroupLayer(group, layer).pits.map((pit, index) => {
+      const product = productById(pit.productId) || {};
+      return { "货架组": group.id, "层级": layer, "顺序": index + 1, "坑位ID": pit.id, "SKU编码": product.barcode || "", "SKU名称": product.name || "", "坑位类型": pit.kind === "expansion" ? "扩陈" : "基础" };
+    })));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(products), "SKU底表");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(layerRows), "货架层");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(placements), "陈列坑位");
+    XLSX.writeFile(workbook, "最新陈列底表_" + new Date().toISOString().slice(0, 10) + ".xlsx");
+    setStatus("已导出最新 Excel 底表：SKU底表、货架层、陈列坑位共 3 个工作表。");
+  }
+
   function backupJson() {
     const blob = new Blob([JSON.stringify(state.data, null, 2)], { type: "application/json;charset=utf-8" });
     const link = document.createElement("a");
@@ -1011,18 +1237,6 @@
     } finally {
       el("restoreInput").value = "";
     }
-  }
-
-  function resetToBottomTable() {
-    if (!window.confirm("确认恢复底表初始数据？浏览器中的人工调整将被清除。")) return;
-    state.data = clone(initialData);
-    state.currentCategory = initialData.categories[0] || "";
-    state.secondaryFilter = "全部";
-    state.selectedProductId = null;
-    state.selectedTarget = null;
-    saveState();
-    renderAll();
-    setStatus("已恢复最后确认版底表数据。");
   }
 
   function handleClick(event) {
@@ -1207,6 +1421,14 @@
     el("toggleDragOverviewBtn").addEventListener("click", () => updateDragOverview(!state.dragOverviewOpen));
     el("totalSearch").addEventListener("input", renderTotalPool);
     el("exportPdfBtn").addEventListener("click", exportCurrentCategoryPdf);
+    el("exportChangesBtn").addEventListener("click", exportChangePackage);
+    el("adminSyncBtn").addEventListener("click", openAdminDialog);
+    el("closeAdminBtn").addEventListener("click", closeAdminDialog);
+    el("changeImportInput").addEventListener("change", event => importChangePackage(event.target.files?.[0]));
+    el("setResetPasswordBtn").addEventListener("click", setResetPassword);
+    el("syncGithubBtn").addEventListener("click", syncToGithubBase);
+    el("exportExcelBtn").addEventListener("click", exportBaseExcel);
+    el("adminSyncDialog").addEventListener("click", event => { if (event.target === el("adminSyncDialog")) closeAdminDialog(); });
     el("backupBtn").addEventListener("click", backupJson);
     el("restoreInput").addEventListener("change", event => importJson(event.target.files?.[0]));
     el("resetBtn").addEventListener("click", resetToBottomTable);

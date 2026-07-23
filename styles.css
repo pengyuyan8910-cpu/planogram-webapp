@@ -110,6 +110,7 @@ h2{font-size:18px}
 .state-on{color:var(--success)}.state-unplaced{color:var(--warning)}.state-eliminated{color:var(--muted)}
 .empty{padding:18px;text-align:center;color:var(--muted);font-size:13px}
 .editor-dialog{width:min(720px,calc(100% - 24px));border:0;border-radius:14px;padding:18px;box-shadow:0 25px 80px rgba(16,24,40,.25)}
+.admin-dialog{width:min(820px,calc(100% - 24px));max-height:calc(100vh - 32px);overflow:auto}.admin-summary{padding:10px 12px;border-left:4px solid var(--accent);border-radius:8px;background:var(--accent-soft);font-size:13px;line-height:1.55}.admin-section{margin-top:14px;padding:13px;border:1px solid var(--border);border-radius:10px;background:var(--panel-soft)}.admin-section h3{font-size:15px;margin-bottom:5px}.admin-section p{margin:0 0 9px;color:var(--muted);font-size:12px;line-height:1.5}.admin-section .field{margin-top:9px}.admin-section .btn{margin-top:9px}.admin-note{margin-top:9px;padding:8px 10px;border-radius:7px;background:#eef4ff;color:#344054;font-size:12px;line-height:1.45}.admin-note.error{background:#fff1f0;color:var(--danger)}
 .editor-dialog::backdrop{background:rgba(16,24,40,.45)}
 .dialog-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px}
 .icon-btn{font-size:22px;padding:2px 9px}
