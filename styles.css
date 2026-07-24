@@ -63,6 +63,8 @@ h2{font-size:18px}
 .pit-track.drag-over,.drop-zone.drag-over{border:2px solid var(--accent);background:#e8f2ff;box-shadow:inset 0 0 0 2px rgba(31,111,235,.12)}
 .pit{flex:0 0 auto;width:clamp(118px,calc(var(--face-width) * .34px),190px);border:1px solid var(--border);border-radius:8px;padding:8px;background:#fff;font-size:12px;line-height:1.35;cursor:grab;position:relative;transition:transform .16s ease,box-shadow .16s ease,outline-color .16s ease}
 .pit.expansion{background:var(--accent-soft)}
+.pit.module-start.expansion{margin-left:18px;border-left:4px solid #5b8def;box-shadow:-8px 0 0 #fff}
+.pit.module-start.expansion::before{content:"扩陈模块";position:absolute;top:-17px;left:0;color:#3867c8;font-size:10px;font-weight:800;white-space:nowrap}
 .pit.selected{outline:2px solid var(--accent);outline-offset:1px}
 .pit.dragging,.pit.dragging-block,.overview-pit.dragging-block{opacity:.35;transform:scale(.96);cursor:grabbing}
 .pit.drop-before,.overview-pit.drop-before{box-shadow:-4px 0 0 #1f6feb,0 4px 12px rgba(31,111,235,.15)}

@@ -18,7 +18,7 @@
     dragHoverPit: null,
     dragHoverAfter: false,
     dragOverviewOpen: false,
-    lastMovedProductId: null,
+    lastMovedPitIds: [],
     lastMoveLabel: "",
     lastMoveTimer: null
   };
@@ -150,9 +150,12 @@
   }
 
   function fullDisplayText(product, layer = null) {
-    const pits = actualPitCount(product.id) || integer(product.plannedPits, 1);
-    const maximum = maxBoxesForPlan(product, pits, layer);
-    return "\u6ee1\u9648" + integer(product.shelfBoxes) + "\u7bb1\uff5c" + pitCapacityText(product, layer) + "\uff5c" + pits + "\u5751\u603b\u5bb9\u91cf" + maximum + "\u7bb1";
+    const placements = allPitsForProduct(product.id);
+    const pits = placements.length || integer(product.plannedPits, 1);
+    const maximum = placements.length
+      ? placements.reduce((sum, item) => sum + boxesPerPit(product, item.layer), 0)
+      : maxBoxesForPlan(product, pits, layer);
+    return "满陈" + integer(product.shelfBoxes) + "箱｜" + pitCapacityText(product, layer) + "｜" + pits + "坑总容量" + maximum + "箱";
   }
 
   function actualPitCount(productId) {
@@ -243,21 +246,21 @@
     });
   }
 
-  function validatePlacement(product, group, layer, count, releasedWidth = 0) {
-    if (!group) return { ok: false, message: "未选择有效货架组。" };
-    if (!layers.includes(layer)) return { ok: false, message: "未选择有效层级。" };
+  function validatePlacement(product, group, layer, count, releasedWidth = 0, maximumCapacity = null) {
+    if (!group) return { ok: false, message: "\u672a\u9009\u62e9\u6709\u6548\u8d27\u67b6\u7ec4\u3002" };
+    if (!layers.includes(layer)) return { ok: false, message: "\u672a\u9009\u62e9\u6709\u6548\u5c42\u7ea7\u3002" };
     const safeCount = Math.max(1, integer(count, 1));
-    const capacityCheck = validateFullDisplayCapacity(product, safeCount, layer);
-    if (!capacityCheck.ok) return capacityCheck;
+    const maximum = maximumCapacity ?? maxBoxesForPlan(product, safeCount, layer);
+    if (integer(product.shelfBoxes, 0) > maximum) {
+      return { ok: false, message: "\u6ee1\u9648" + integer(product.shelfBoxes) + "\u7bb1\u8d85\u8fc7\u5f53\u524d\u9648\u5217\u65b9\u6848\u7684\u603b\u5bb9\u91cf" + maximum + "\u7bb1\u3002" };
+    }
     const basePits = Math.max(1, integer(product.basePits, 1));
     if (["B", "C", "D"].includes(layer) && product.grade === "D" && safeCount > basePits) {
-      return { ok: false, message: "B/C/D层的D级SKU禁止增加扩陈坑位。" };
+      return { ok: false, message: "B/C/D\u5c42\u7684D\u7ea7SKU\u7981\u6b62\u589e\u52a0\u6269\u9648\u5751\u4f4d\u3002" };
     }
     const need = integer(product.faceWidth) * safeCount;
     const available = layerRemaining(group, layer) + releasedWidth;
-    if (need > available) {
-      return { ok: false, message: `${group.id}-${layer}层余量不足：需要${need}mm，可用${available}mm。` };
-    }
+    if (need > available) return { ok: false, message: group.id + "-" + layer + "\u5c42\u4f59\u91cf\u4e0d\u8db3\uff1a\u9700\u8981" + need + "mm\uff0c\u53ef\u7528" + available + "mm\u3002" };
     return { ok: true };
   }
 
@@ -399,26 +402,32 @@
     );
   }
 
-  function moveProductBlock(productId, targetGroupId, targetLayer, beforePitId = null) {
+  function movePitModule(payload, targetGroupId, targetLayer, beforePitId = null) {
+    const productId = payload.productId;
     const product = productById(productId);
     const targetGroup = groupById(targetGroupId);
     if (!product || !targetGroup) return false;
+    const sourceGroup = groupById(payload.groupId);
+    const sourceLayerData = sourceGroup && ensureGroupLayer(sourceGroup, payload.layer);
+    const sourcePit = sourceLayerData?.pits.find(pit => pit.id === payload.pitId);
+    if (!sourcePit) return false;
 
-    const placements = allPitsForProduct(productId);
-    if (!placements.length) return false;
+    // Drag only the base or expansion module in its current layer.
+    // The same SKU may therefore exist on more than one layer.
+    const sourceBlock = sourceLayerData.pits.filter(pit => pit.productId === productId && pit.kind === sourcePit.kind);
+    if (!sourceBlock.length) return false;
+    const movingIds = new Set(sourceBlock.map(pit => pit.id));
+    const releasedWidth = sourceGroup.id === targetGroupId && payload.layer === targetLayer
+      ? sourceBlock.length * integer(product.faceWidth)
+      : 0;
+    const remainingCapacity = allPitsForProduct(productId)
+      .filter(item => !movingIds.has(item.pit.id))
+      .reduce((sum, item) => sum + boxesPerPit(product, item.layer), 0);
+    const totalCapacityAfterMove = remainingCapacity + sourceBlock.length * boxesPerPit(product, targetLayer);
+    const check = validatePlacement(product, targetGroup, targetLayer, sourceBlock.length, releasedWidth, totalCapacityAfterMove);
+    if (!check.ok) { setStatus(check.message, true); return false; }
 
-    const sourceBlock = placements.map(item => item.pit);
-    const releasedWidth = placements
-      .filter(item => item.groupId === targetGroupId && item.layer === targetLayer)
-      .length * integer(product.faceWidth);
-
-    const check = validatePlacement(product, targetGroup, targetLayer, sourceBlock.length, releasedWidth);
-    if (!check.ok) {
-      setStatus(check.message, true);
-      return false;
-    }
-
-    removeProductPits(productId);
+    sourceLayerData.pits = sourceLayerData.pits.filter(pit => !movingIds.has(pit.id));
     const targetData = ensureGroupLayer(targetGroup, targetLayer);
     let insertionIndex = targetData.pits.length;
     if (beforePitId) {
@@ -426,29 +435,28 @@
       if (found >= 0) insertionIndex = found;
     }
     targetData.pits.splice(insertionIndex, 0, ...sourceBlock);
-    normalizeProductBlock(targetGroup, targetLayer, productId);
     state.selectedTarget = { groupId: targetGroupId, layer: targetLayer };
     state.selectedProductId = productId;
-    state.lastMovedProductId = productId;
-    state.lastMoveLabel = `${targetGroupId}-${targetLayer}层`;
+    state.lastMovedPitIds = sourceBlock.map(pit => pit.id);
+    state.lastMoveLabel = targetGroupId + "-" + targetLayer + "\u5c42";
     saveState();
     renderAll();
     requestAnimationFrame(() => {
-      const moved = qs(`.pit[data-product-id="${CSS.escape(productId)}"]`);
+      const moved = qs(".pit[data-pit-id=\"" + CSS.escape(sourceBlock[0].id) + "\"]");
       moved?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
     });
     if (state.lastMoveTimer) window.clearTimeout(state.lastMoveTimer);
     state.lastMoveTimer = window.setTimeout(() => {
-      if (state.lastMovedProductId !== productId) return;
-      state.lastMovedProductId = null;
+      state.lastMovedPitIds = [];
       state.lastMoveLabel = "";
-      qsa(`.pit[data-product-id="${CSS.escape(productId)}"]`).forEach(node => {
+      qsa(".pit.just-moved").forEach(node => {
         node.classList.remove("just-moved");
         node.querySelector(".move-badge")?.remove();
       });
       state.lastMoveTimer = null;
-    }, 60_000);
-    setStatus(`已移动：${product.name}的${sourceBlock.length}个坑位已整体移动到${targetGroupId}-${targetLayer}层，并以“刚移动”标记显示 1 分钟。`);
+    }, 60000);
+    const moduleName = sourcePit.kind === "base" ? "\u57fa\u7840" : "\u6269\u9648";
+    setStatus("\u5df2\u79fb\u52a8\uff1a" + product.name + "\u7684" + moduleName + "\u6a21\u5757\uff08" + sourceBlock.length + "\u4e2a\u5751\u4f4d\uff09\u5df2\u79fb\u81f3" + targetGroupId + "-" + targetLayer + "\u5c42\uff0c\u5e76\u6309\u8be5\u5c42\u5bb9\u91cf\u89c4\u5219\u590d\u6838\u3002");
     return true;
   }
 
@@ -689,7 +697,7 @@
     saveState();
 
     if (el("addDirectly").checked) {
-      placeUnplacedProduct(product.id);
+      placeUnplacedProduct(product.id, state.selectedTarget?.groupId, product.grade);
     } else {
       renderAll();
       setStatus(`${product.name}已新增至总产品池，并进入未放入SKU池。`);
@@ -736,12 +744,9 @@
     const product = productById(pit.productId);
     if (!product) return "";
     const layerData = ensureGroupLayer(group, layer);
-    const samePits = layerData.pits.filter(item => item.productId === product.id);
-    const localIndex = layerData.pits
-      .slice(0, index + 1)
-      .filter(item => item.productId === product.id).length;
-    const basePits = samePits.filter(item => item.kind === "base");
-    const expansionPits = samePits.filter(item => item.kind === "expansion");
+    const previous = layerData.pits[index - 1];
+    const basePits = layerData.pits.filter(item => item.productId === product.id && item.kind === "base");
+    const expansionPits = layerData.pits.filter(item => item.productId === product.id && item.kind === "expansion");
     const kindIndex = layerData.pits
       .slice(0, index + 1)
       .filter(item => item.productId === product.id && item.kind === pit.kind).length;
@@ -751,17 +756,18 @@
       : `【扩陈】${kindIndex}/${kindTotal}`;
 
     return `
-      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedProductId === product.id ? "just-moved" : ""} ${hasDataChange(product) ? "data-changed" : ""}"
+      <article class="pit ${pit.kind === "expansion" ? "expansion" : ""} ${(!previous || previous.productId !== product.id || previous.kind !== pit.kind) ? "module-start" : ""} ${state.selectedProductId === product.id ? "selected" : ""} ${state.lastMovedPitIds.includes(pit.id) ? "just-moved" : ""} ${hasDataChange(product) ? "data-changed" : ""}"
         style="--face-width:${Math.max(80, integer(product.faceWidth, 100))}"
         draggable="true"
         data-pit-id="${escapeHtml(pit.id)}"
         data-product-id="${escapeHtml(product.id)}"
         data-group-id="${escapeHtml(group.id)}"
+        data-pit-kind="${escapeHtml(pit.kind)}"
         data-layer="${layer}">
-        ${state.lastMovedProductId === product.id ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
+        ${state.lastMovedPitIds.includes(pit.id) ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
         ${hasDataChange(product) ? `<span class="data-badge">数据已调整</span>` : ""}
         <h4>${escapeHtml(product.name)}</h4>
-        <div class="pit-index">\u5751\u4f4d ${localIndex}/${samePits.length}\uff5c${pitCapacityText(product, layer)}</div>
+        <div class="pit-index">\u5751\u4f4d ${pit.kind === "base" ? "基础坑位" : "扩陈坑位"} ${kindIndex}/${kindTotal}\uff5c${pitCapacityText(product, layer)}</div>
         <div class="pit-kind">${kindText}</div>
         <div class="meta"><span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.thirdCategory || "\u672a\u5206\u7c7b")}</div>
         <div class="meta">${fullDisplayText(product, layer)}\uff5c\u5468\u8f6c${number(product.turnoverDays).toFixed(1)}\u5929</div>
@@ -824,7 +830,7 @@
       const pits = layerData.pits.map((pit, index) => {
         const product = productById(pit.productId);
         if (!product) return "";
-        return `<div class="overview-pit" draggable="true" data-pit-id="${escapeHtml(pit.id)}" data-product-id="${escapeHtml(product.id)}" data-group-id="${escapeHtml(group.id)}" data-layer="${layer}" title="${escapeHtml(product.name)}｜坑位 ${index + 1}">${escapeHtml(product.name)}<small>${index + 1}</small></div>`;
+        return `<div class="overview-pit" draggable="true" data-pit-id="${escapeHtml(pit.id)}" data-product-id="${escapeHtml(product.id)}" data-group-id="${escapeHtml(group.id)}" data-pit-kind="${escapeHtml(pit.kind)}" data-layer="${layer}" title="${escapeHtml(product.name)}｜坑位 ${index + 1}">${escapeHtml(product.name)}<small>${index + 1}</small></div>`;
       }).join("");
       return `<section class="overview-row"><div class="overview-meta"><b>${escapeHtml(group.id)}-${layer}层</b><span>${layerData.pits.length} 坑</span></div><div class="overview-track" data-drop-group="${escapeHtml(group.id)}" data-drop-layer="${layer}">${pits || '<span class="overview-empty">空层：可放在这里</span>'}</div></section>`;
     }));
@@ -1424,11 +1430,14 @@
     };
     if (state.lastMoveTimer) window.clearTimeout(state.lastMoveTimer);
     state.lastMoveTimer = null;
-    state.lastMovedProductId = null;
+    state.lastMovedPitIds = [];
     state.lastMoveLabel = "";
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/json", JSON.stringify(state.dragPayload));
-    qsa(`.pit[data-product-id="${CSS.escape(pit.dataset.productId)}"], .overview-pit[data-product-id="${CSS.escape(pit.dataset.productId)}"]`).forEach(node => node.classList.add("dragging-block"));
+    const moduleSelector =
+      ".pit[data-group-id=\"" + CSS.escape(pit.dataset.groupId) + "\"][data-layer=\"" + CSS.escape(pit.dataset.layer) + "\"][data-product-id=\"" + CSS.escape(pit.dataset.productId) + "\"][data-pit-kind=\"" + CSS.escape(pit.dataset.pitKind) + "\"]," +
+      " .overview-pit[data-group-id=\"" + CSS.escape(pit.dataset.groupId) + "\"][data-layer=\"" + CSS.escape(pit.dataset.layer) + "\"][data-product-id=\"" + CSS.escape(pit.dataset.productId) + "\"][data-pit-kind=\"" + CSS.escape(pit.dataset.pitKind) + "\"]";
+    qsa(moduleSelector).forEach(node => node.classList.add("dragging-block"));
     const ghost = document.createElement("div");
     ghost.className = "drag-ghost";
     ghost.textContent = `移动：${pit.querySelector("h4")?.textContent || pit.textContent?.trim() || "SKU"}`;
@@ -1507,7 +1516,7 @@
       ? targetPit.nextElementSibling?.dataset.pitId || null
       : targetPit?.dataset.pitId || null;
     if (targetGroupId && targetLayer) {
-      moveProductBlock(payload.productId, targetGroupId, targetLayer, beforePitId);
+      movePitModule(payload, targetGroupId, targetLayer, beforePitId);
     }
   }
 
@@ -1571,15 +1580,57 @@
     if (sameCloudValue(local, base)) return remote;
     if (sameCloudValue(remote, base)) return local;
     if (sameCloudValue(local, remote)) return local;
-    conflicts.push(label); return remote;
+    if (!base || !local || !remote || typeof base !== "object" || Array.isArray(base) || Array.isArray(local) || Array.isArray(remote)) {
+      conflicts.push(label); return remote;
+    }
+    const merged = { ...remote };
+    const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
+    keys.forEach(key => {
+      if (key === "id" || key === "layers") return;
+      const baseValue = base[key], localValue = local[key], remoteValue = remote[key];
+      if (sameCloudValue(localValue, baseValue)) return;
+      if (sameCloudValue(remoteValue, baseValue) || sameCloudValue(localValue, remoteValue)) { merged[key] = localValue; return; }
+      conflicts.push(label + " 字段:" + key);
+    });
+    return merged;
+  }
+
+  function productBlocks(pits) {
+    const map = new Map();
+    (pits || []).forEach(pit => { const list = map.get(pit.productId) || []; list.push(pit); map.set(pit.productId, list); });
+    return map;
+  }
+  function mergeLayerPits(basePits, localPits, remotePits, label, conflicts) {
+    if (sameCloudValue(localPits, basePits)) return remotePits || [];
+    if (sameCloudValue(remotePits, basePits)) return localPits || [];
+    if (sameCloudValue(localPits, remotePits)) return localPits || [];
+    const base = productBlocks(basePits), local = productBlocks(localPits), remote = productBlocks(remotePits);
+    let merged = clone(remotePits || []);
+    [...local.keys()].forEach(productId => {
+      const baseBlock = base.get(productId) || [], localBlock = local.get(productId) || [], remoteBlock = remote.get(productId) || [];
+      const localChanged = !sameCloudValue(localBlock, baseBlock);
+      const remoteChanged = !sameCloudValue(remoteBlock, baseBlock);
+      if (!localChanged) return;
+      if (remoteChanged && !sameCloudValue(localBlock, remoteBlock)) { conflicts.push(label + " SKU:" + productId); return; }
+      merged = merged.filter(pit => pit.productId !== productId);
+      merged.push(...clone(localBlock));
+    });
+    return merged;
   }
   function mergeCloudGroups(base, local, remote, label, conflicts) {
     if (!base || !local || !remote) return mergeCloudRecord(base, local, remote, label, conflicts);
-    const merged = { ...remote }, baseMeta = { ...base, layers: undefined }, localMeta = { ...local, layers: undefined }, remoteMeta = { ...remote, layers: undefined };
-    Object.assign(merged, mergeCloudRecord(baseMeta, localMeta, remoteMeta, label, conflicts)); merged.layers = { ...remote.layers };
-    layers.forEach(layer => { merged.layers[layer] = mergeCloudRecord(base.layers?.[layer], local.layers?.[layer], remote.layers?.[layer], label + "-" + layer, conflicts); });
+    const baseMeta = { ...base, layers: undefined }, localMeta = { ...local, layers: undefined }, remoteMeta = { ...remote, layers: undefined };
+    const merged = mergeCloudRecord(baseMeta, localMeta, remoteMeta, label, conflicts);
+    merged.layers = { ...remote.layers };
+    layers.forEach(layer => {
+      const baseLayer = base.layers?.[layer] || { pits: [] }, localLayer = local.layers?.[layer] || { pits: [] }, remoteLayer = remote.layers?.[layer] || { pits: [] };
+      const layerMeta = mergeCloudRecord({ ...baseLayer, pits: undefined }, { ...localLayer, pits: undefined }, { ...remoteLayer, pits: undefined }, label + "-" + layer, conflicts);
+      layerMeta.pits = mergeLayerPits(baseLayer.pits, localLayer.pits, remoteLayer.pits, label + "-" + layer, conflicts);
+      merged.layers[layer] = layerMeta;
+    });
     return merged;
   }
+
   function mergeCloudList(baseList, localList, remoteList, label, merger, conflicts) {
     const map = list => new Map((list || []).map(item => [item.id, item])); const base = map(baseList), local = map(localList), remote = map(remoteList);
     const ids = [...(remoteList || []).map(x => x.id), ...(localList || []).map(x => x.id).filter(id => !remote.has(id))];
