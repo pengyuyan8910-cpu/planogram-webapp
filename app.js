@@ -113,15 +113,14 @@
     return allPitsForProduct(product.id)[0]?.layer || fallback;
   }
 
+  const LAYER_USABLE_HEIGHT = { A: 910, B: 350, C: 350, D: 350 };
   function pitCapacity(product, layer = null) {
     const actualLayer = layer || placementLayer(product);
     const depth = Math.max(1, integer(product.depthCount, 1));
-    if (actualLayer !== "A") return { maximum: depth, depth, stack: 1, layer: actualLayer };
-
-    const declaredMaximum = Math.max(1, integer(product.singleFaceCapacity, depth));
-    const declaredStack = Math.max(1, integer(product.stackCount, Math.ceil(declaredMaximum / depth)));
-    const maximum = Math.max(declaredMaximum, depth * declaredStack);
-    return { maximum, depth, stack: declaredStack, layer: actualLayer };
+    const boxHeight = Math.max(1, integer(product.height, 1));
+    const usableHeight = LAYER_USABLE_HEIGHT[actualLayer] || LAYER_USABLE_HEIGHT.B;
+    const stack = actualLayer === "A" ? Math.max(1, Math.floor(usableHeight / boxHeight)) : 1;
+    return { maximum: depth * stack, depth, stack, layer: actualLayer, usableHeight };
   }
 
   function boxesPerPit(product, layer = null) {
@@ -412,10 +411,8 @@
     const sourcePit = sourceLayerData?.pits.find(pit => pit.id === payload.pitId);
     if (!sourcePit) return false;
 
-    // Drag only the base or expansion module in its current layer.
-    // The same SKU may therefore exist on more than one layer.
-    const sourceBlock = sourceLayerData.pits.filter(pit => pit.productId === productId && pit.kind === sourcePit.kind);
-    if (!sourceBlock.length) return false;
+    // Each display pit is independently draggable, including every expansion pit.
+    const sourceBlock = [sourcePit];
     const movingIds = new Set(sourceBlock.map(pit => pit.id));
     const releasedWidth = sourceGroup.id === targetGroupId && payload.layer === targetLayer
       ? sourceBlock.length * integer(product.faceWidth)
@@ -1434,10 +1431,7 @@
     state.lastMoveLabel = "";
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/json", JSON.stringify(state.dragPayload));
-    const moduleSelector =
-      ".pit[data-group-id=\"" + CSS.escape(pit.dataset.groupId) + "\"][data-layer=\"" + CSS.escape(pit.dataset.layer) + "\"][data-product-id=\"" + CSS.escape(pit.dataset.productId) + "\"][data-pit-kind=\"" + CSS.escape(pit.dataset.pitKind) + "\"]," +
-      " .overview-pit[data-group-id=\"" + CSS.escape(pit.dataset.groupId) + "\"][data-layer=\"" + CSS.escape(pit.dataset.layer) + "\"][data-product-id=\"" + CSS.escape(pit.dataset.productId) + "\"][data-pit-kind=\"" + CSS.escape(pit.dataset.pitKind) + "\"]";
-    qsa(moduleSelector).forEach(node => node.classList.add("dragging-block"));
+    qsa("[data-pit-id=\"" + CSS.escape(pit.dataset.pitId) + "\"]").forEach(node => node.classList.add("dragging-block"));
     const ghost = document.createElement("div");
     ghost.className = "drag-ghost";
     ghost.textContent = `移动：${pit.querySelector("h4")?.textContent || pit.textContent?.trim() || "SKU"}`;
