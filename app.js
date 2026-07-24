@@ -109,20 +109,50 @@
     return output;
   }
 
+  function placementLayer(product, fallback = "") {
+    return allPitsForProduct(product.id)[0]?.layer || fallback;
+  }
+
+  function pitCapacity(product, layer = null) {
+    const actualLayer = layer || placementLayer(product);
+    const depth = Math.max(1, integer(product.depthCount, 1));
+    if (actualLayer !== "A") return { maximum: depth, depth, stack: 1, layer: actualLayer };
+
+    const declaredMaximum = Math.max(1, integer(product.singleFaceCapacity, depth));
+    const declaredStack = Math.max(1, integer(product.stackCount, Math.ceil(declaredMaximum / depth)));
+    const maximum = Math.max(declaredMaximum, depth * declaredStack);
+    return { maximum, depth, stack: declaredStack, layer: actualLayer };
+  }
+
   function boxesPerPit(product, layer = null) {
-    const actualLayer = layer || allPitsForProduct(product.id)[0]?.layer || "";
-    const capacity = actualLayer === "A"
-      ? (product.singleFaceCapacity || product.depthCount)
-      : product.depthCount;
-    return Math.max(1, integer(capacity, 1));
+    return pitCapacity(product, layer).maximum;
   }
-  function requiredPits(product, layer = null) {
-    return Math.max(1, Math.ceil(integer(product.shelfBoxes, 0) / boxesPerPit(product, layer)));
+
+  function pitCapacityText(product, layer = null) {
+    const capacity = pitCapacity(product, layer);
+    if (capacity.maximum <= 1) return "\u6700\u591a1\u7bb1";
+    const parts = ["\u6700\u591a" + capacity.maximum + "\u7bb1"];
+    if (capacity.depth > 1) parts.push("\u7eb5\u6df1" + capacity.depth + "\u7bb1");
+    if (capacity.layer === "A" && capacity.stack > 1) parts.push("\u5806\u53e0" + capacity.stack + "\u7bb1");
+    return parts.join("\uff0c");
   }
+
+  function maxBoxesForPlan(product, plannedPits, layer = null) {
+    return Math.max(1, integer(plannedPits, 1)) * boxesPerPit(product, layer);
+  }
+
+  function validateFullDisplayCapacity(product, plannedPits, layer) {
+    const maximum = maxBoxesForPlan(product, plannedPits, layer);
+    if (integer(product.shelfBoxes, 0) > maximum) {
+      return { ok: false, message: "\u6ee1\u9648" + integer(product.shelfBoxes) + "\u7bb1\u8d85\u8fc7" + Math.max(1, integer(plannedPits, 1)) + "\u4e2a\u5751\u4f4d\u7684\u6700\u5927\u5bb9\u91cf" + maximum + "\u7bb1\uff08" + pitCapacityText(product, layer) + "\uff09\u3002" };
+    }
+    return { ok: true };
+  }
+
   function fullDisplayText(product, layer = null) {
     const pits = actualPitCount(product.id) || integer(product.plannedPits, 1);
-    const each = boxesPerPit(product, layer);
-    return "\u6ee1\u9648" + integer(product.shelfBoxes) + "\u7bb1\uff5c\u5751\u4f4d" + pits + "\uff5c\u6bcf\u5751\u7eb5\u6df1" + each + "\u7bb1\uff5c\u53ef\u5bb9\u7eb3" + (pits * each) + "\u7bb1";
+    const maximum = maxBoxesForPlan(product, pits, layer);
+    return "\u6ee1\u9648" + integer(product.shelfBoxes) + "\u7bb1\uff5c" + pitCapacityText(product, layer) + "\uff5c" + pits + "\u5751\u603b\u5bb9\u91cf" + maximum + "\u7bb1";
   }
 
   function actualPitCount(productId) {
@@ -217,6 +247,8 @@
     if (!group) return { ok: false, message: "未选择有效货架组。" };
     if (!layers.includes(layer)) return { ok: false, message: "未选择有效层级。" };
     const safeCount = Math.max(1, integer(count, 1));
+    const capacityCheck = validateFullDisplayCapacity(product, safeCount, layer);
+    if (!capacityCheck.ok) return capacityCheck;
     const basePits = Math.max(1, integer(product.basePits, 1));
     if (["B", "C", "D"].includes(layer) && product.grade === "D" && safeCount > basePits) {
       return { ok: false, message: "B/C/D层的D级SKU禁止增加扩陈坑位。" };
@@ -246,6 +278,8 @@
     const product = productById(productId);
     if (!product) return;
     const count = Math.max(1, Math.min(20, integer(requestedCount, product.plannedPits || 1)));
+    const previousPlannedPits = product.plannedPits;
+    const previousDataChanged = product.dataChanged;
     if (product.plannedPits !== count) product.dataChanged = true;
     product.plannedPits = count;
     const placements = allPitsForProduct(productId);
@@ -265,6 +299,8 @@
 
     const check = validatePlacement(product, group, target.layer, count, oldWidth);
     if (!check.ok) {
+      product.plannedPits = previousPlannedPits;
+      product.dataChanged = previousDataChanged;
       renderAll();
       setStatus(check.message, true);
       return;
@@ -495,6 +531,7 @@
     el("editTurnover").value = number(product.turnoverDays, 0);
     el("editBasePits").value = Math.max(1, integer(product.basePits, 1));
     el("editPlannedPits").value = Math.max(1, integer(product.plannedPits, 1));
+    updateEditorCapacityHint(product);
     el("editorDialog").showModal();
   }
 
@@ -503,10 +540,28 @@
     if (dialog.open) dialog.close();
   }
 
+  function updateEditorCapacityHint(product = productById(el("editId")?.value)) {
+    const hint = el("editCapacityHint");
+    if (!hint || !product) return;
+    const draft = { ...product, shelfBoxes: Math.max(0, integer(el("editShelfBoxes")?.value, product.shelfBoxes)) };
+    const planned = Math.max(1, integer(el("editPlannedPits")?.value, product.plannedPits));
+    const layer = placementLayer(product);
+    if (!layer) {
+      hint.textContent = "\u5f53\u524d\u672a\u4e0a\u67b6\uff1a\u8bf7\u5728\u9009\u62e9\u76ee\u6807\u5c42\u65f6\u6309\u8be5\u5c42\u5bb9\u91cf\u590d\u6838\u3002";
+      hint.classList.remove("error");
+      return;
+    }
+    const maximum = maxBoxesForPlan(draft, planned, layer);
+    const valid = integer(draft.shelfBoxes, 0) <= maximum;
+    hint.textContent = layer + "\u5c42\uff1a" + pitCapacityText(draft, layer) + "\uff1b\u8ba1\u5212" + planned + "\u5751\u603b\u5bb9\u91cf" + maximum + "\u7bb1\uff1b\u5f53\u524d\u6ee1\u9648" + integer(draft.shelfBoxes, 0) + "\u7bb1" + (valid ? "\u3002" : "\uff0c\u5df2\u8d85\u51fa\u5bb9\u91cf\u3002");
+    hint.classList.toggle("error", !valid);
+  }
+
   function saveEditor() {
     const product = productById(el("editId").value);
     if (!product) return;
 
+    const originalProduct = clone(product);
     const previousCategory = product.category;
     const previousValues = JSON.stringify({ name: product.name, barcode: product.barcode, category: product.category, second: product.secondCategory, third: product.thirdCategory, fourth: product.fourthCategory, grade: product.grade, newFlag: product.newFlag, faceWidth: product.faceWidth, depth: product.depth, height: product.height, shelfBoxes: product.shelfBoxes, turnoverDays: product.turnoverDays, basePits: product.basePits, plannedPits: product.plannedPits });
     const nextCategory = el("editCategory").value;
@@ -526,7 +581,22 @@
     product.turnoverDays = Math.max(0, number(el("editTurnover").value, 0));
     product.basePits = Math.max(1, integer(el("editBasePits").value, 1));
 
-    product.plannedPits = requiredPits(product);
+    product.plannedPits = Math.max(1, Math.min(20, integer(el("editPlannedPits").value, product.plannedPits)));
+    const placements = allPitsForProduct(product.id);
+    const target = placements[0];
+    if (target && previousCategory === nextCategory) {
+      const group = groupById(target.groupId);
+      const releasedWidth = placements
+        .filter(item => item.groupId === target.groupId && item.layer === target.layer)
+        .length * integer(originalProduct.faceWidth);
+      const placementCheck = validatePlacement(product, group, target.layer, product.plannedPits, releasedWidth);
+      if (!placementCheck.ok) {
+        Object.assign(product, originalProduct);
+        updateEditorCapacityHint(product);
+        setStatus(placementCheck.message, true);
+        return;
+      }
+    }
     const nextValues = JSON.stringify({ name: product.name, barcode: product.barcode, category: product.category, second: product.secondCategory, third: product.thirdCategory, fourth: product.fourthCategory, grade: product.grade, newFlag: product.newFlag, faceWidth: product.faceWidth, depth: product.depth, height: product.height, shelfBoxes: product.shelfBoxes, turnoverDays: product.turnoverDays, basePits: product.basePits, plannedPits: product.plannedPits });
     if (previousValues !== nextValues) product.dataChanged = true;
 
@@ -691,7 +761,7 @@
         ${state.lastMovedProductId === product.id ? `<span class="move-badge">刚移动 · ${escapeHtml(state.lastMoveLabel)}</span>` : ""}
         ${hasDataChange(product) ? `<span class="data-badge">数据已调整</span>` : ""}
         <h4>${escapeHtml(product.name)}</h4>
-        <div class="pit-index">\u5751\u4f4d ${localIndex}/${samePits.length}\uff5c\u6bcf\u5751\u7eb5\u6df1${boxesPerPit(product, layer)}\u7bb1</div>
+        <div class="pit-index">\u5751\u4f4d ${localIndex}/${samePits.length}\uff5c${pitCapacityText(product, layer)}</div>
         <div class="pit-kind">${kindText}</div>
         <div class="meta"><span class="sku-grade">${escapeHtml(product.grade)}\u7ea7</span>\uff5c${product.newFlag === "\u65b0\u54c1" ? "<span class=\"sku-new\">\u65b0\u54c1</span>\uff5c" : "<span class=\"sku-old\">\u8001\u54c1</span>\uff5c"}${escapeHtml(product.thirdCategory || "\u672a\u5206\u7c7b")}</div>
         <div class="meta">${fullDisplayText(product, layer)}\uff5c\u5468\u8f6c${number(product.turnoverDays).toFixed(1)}\u5929</div>
@@ -796,7 +866,7 @@
         </div>
         <div class="numbers">${fullDisplayText(product)}\uff5c\u6b63\u9762\u5bbd${integer(product.faceWidth)}mm\uff5c\u5468\u8f6c${number(product.turnoverDays).toFixed(1)}\u5929</div>
         <div class="plan-control">
-          <label class="field">\u8ba1\u5212\u5751\u4f4d\u6570\uff08\u6ee1\u9648\u7bb1\u6570\u4fee\u6539\u540e\u81ea\u52a8\u8ba1\u7b97\uff09
+          <label class="field">\u8ba1\u5212\u5751\u4f4d\u6570\uff08\u76f4\u63a5\u51b3\u5b9a\u9648\u5217\u56fe\u5751\u4f4d\u6570\uff09
             <input class="planned-input" type="number" min="1" max="20" value="${Math.max(1, integer(product.plannedPits, 1))}" data-product-id="${escapeHtml(product.id)}">
           </label>
           <button class="btn apply-planned" type="button" data-product-id="${escapeHtml(product.id)}">应用</button>
@@ -1583,6 +1653,9 @@
     el("addSkuBtn").addEventListener("click", addNewProduct);
 
     el("closeEditorBtn").addEventListener("click", closeEditor);
+    ["editShelfBoxes", "editPlannedPits"].forEach(id => {
+      el(id).addEventListener("input", () => updateEditorCapacityHint());
+    });
     el("saveEditorBtn").addEventListener("click", saveEditor);
     el("downEditorBtn").addEventListener("click", () => {
       const id = el("editId").value;
