@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>全品类可视化陈列系统</title>
-  <meta name="description" content="可拖拽、可维护产品池、支持未放入SKU替换、淘汰捞回和PDF导出的全品类陈列工具。">
+  <meta name="description" content="可拖拽、可维护产品池、支持未放入SKU替换、淘汰捞回和可编辑Excel陈列图导出的全品类陈列工具。">
   <link rel="stylesheet" href="./styles.css?v=2026.07.29.01">
   <link rel="stylesheet" href="./multi-store.css?v=2026.07.29.02">
   <style>
@@ -20,10 +20,10 @@
       <div>
         <p class="eyebrow">和县小市口生活馆</p>
         <h1>全品类可视化陈列系统</h1>
-        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · PDF打印 <span class="app-version">版本 v2026.07.29.02 · 多门店云协作</span></p>
+        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.07.29.03 · 可编辑Excel陈列图</span></p>
       </div>
       <div class="top-actions">
-        <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类PDF</button>
+        <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类Excel陈列图</button>
         <button id="cloudBtn" class="btn btn-primary" type="button">云端协作</button>
         <button id="exportCloudExcelBtn" class="btn btn-primary" type="button">导出当前云端 Excel</button>
         <button id="backupBtn" class="btn" type="button">备份数据JSON</button>
@@ -221,9 +221,11 @@
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="./data/initial-data.js?v=2026.07.24.01"></script>
   <script src="./data/store-data.js?v=2026.07.29.02"></script>
   <script src="./multi-store.js?v=2026.07.29.02"></script>
   <script src="./app.js?v=2026.07.24.01"></script>
+  <script src="./excel-planogram.js?v=2026.07.29.03"></script>
 </body>
 </html>
