@@ -174,13 +174,6 @@
     window.location.reload();
   }
 
-  function resetCurrentStore() {
-    if (!window.confirm(`确认恢复“${storeName(selectedStoreId)}”的首版陈列数据吗？当前门店在本浏览器中的调整会被清除。`)) return;
-    nativeRemoveItem.call(window.localStorage, storeKey(selectedStoreId));
-    writeRaw(MAIN_KEY, JSON.stringify(buildStoreInitial(selectedStoreId)));
-    window.location.reload();
-  }
-
   function cloudClient() {
     return window.PLANOGRAM_CLOUD_CLIENT || null;
   }
@@ -617,11 +610,10 @@
       <select id="storeSelect" aria-label="选择门店">
         ${availableStoreIds().map(id => `<option value="${escapeHtml(id)}" ${id === selectedStoreId ? "selected" : ""}>${escapeHtml(storeName(id))}</option>`).join("")}
       </select>
-      ${context.isOriginalStore ? "" : '<button id="storePointBtn" class="btn" type="button">门店点位</button><button id="resetCurrentStoreBtn" class="btn btn-danger-ghost" type="button">恢复当前门店首版</button>'}
+      ${context.isOriginalStore ? "" : '<button id="storePointBtn" class="btn" type="button">门店点位</button>'}
     `;
     titleRoot?.appendChild(holder);
     holder.querySelector("#storeSelect")?.addEventListener("change", event => switchStore(event.target.value));
-    holder.querySelector("#resetCurrentStoreBtn")?.addEventListener("click", resetCurrentStore);
 
     installMultiStoreCloudControls();
 
