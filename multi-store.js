@@ -6,11 +6,27 @@
   const ACTIVE_KEY = "planogram-active-store-v1";
   const STORE_PREFIX = "planogram-store-state-v1::";
   const ORIGINAL_STORE_ID = "hexian-xiaoshikou";
+  const CLOUD_DOCUMENT_ID = "main";
+  const CLOUD_WRAPPER_TYPE = "planogram-multistore-cloud";
+  const CLOUD_SCHEMA_VERSION = 1;
+  const CLOUD_SESSION_PREFIX = "planogram-cloud-session-v2::";
+  const CLOUD_PULL_FLAG_PREFIX = "planogram-cloud-pulled-v2::";
+  const CLOUD_EXPORT_FLAG = "planogram-cloud-export-v2";
+  const CLOUD_BASE_KEY = "planogram-cloud-base-v2";
   const originalData = JSON.parse(JSON.stringify(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] }));
   const allocationRoot = window.PLANOGRAM_STORE_ALLOCATIONS || { stores: {} };
   const storeConfigs = allocationRoot.stores || {};
   const nativeSetItem = Storage.prototype.setItem;
   const nativeRemoveItem = Storage.prototype.removeItem;
+
+  const nativeSupabaseCreateClient = window.supabase?.createClient?.bind(window.supabase);
+  if (nativeSupabaseCreateClient) {
+    window.supabase.createClient = (...args) => {
+      const client = nativeSupabaseCreateClient(...args);
+      window.PLANOGRAM_CLOUD_CLIENT = client;
+      return client;
+    };
+  }
 
   const clone = value => JSON.parse(JSON.stringify(value));
   const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -119,6 +135,27 @@
   }
 
   const selectedStoreId = prepareSelectedStore();
+  let multiStoreCloudRevision = 0;
+  let multiStoreCloudBaseData = null;
+
+  const baseSnapshot = parseJson(window.sessionStorage.getItem(CLOUD_BASE_KEY));
+  if (baseSnapshot?.storeId === selectedStoreId && baseSnapshot?.revision >= 0 && validData(baseSnapshot.data)) {
+    multiStoreCloudRevision = Number(baseSnapshot.revision) || 0;
+    multiStoreCloudBaseData = clone(baseSnapshot.data);
+  } else {
+    const pulledFlag = parseJson(window.sessionStorage.getItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId));
+    if (pulledFlag?.revision >= 0) {
+      const pulledState = parseJson(window.localStorage.getItem(MAIN_KEY));
+      if (validData(pulledState)) {
+        multiStoreCloudRevision = Number(pulledFlag.revision) || 0;
+        multiStoreCloudBaseData = clone(pulledState);
+      }
+      window.sessionStorage.removeItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId);
+    } else {
+      const sessionMeta = parseJson(window.sessionStorage.getItem(CLOUD_SESSION_PREFIX + selectedStoreId));
+      if (sessionMeta?.revision >= 0) multiStoreCloudRevision = Number(sessionMeta.revision) || 0;
+    }
+  }
 
   Storage.prototype.setItem = function(key, value) {
     nativeSetItem.call(this, key, value);
@@ -142,6 +179,382 @@
     nativeRemoveItem.call(window.localStorage, storeKey(selectedStoreId));
     writeRaw(MAIN_KEY, JSON.stringify(buildStoreInitial(selectedStoreId)));
     window.location.reload();
+  }
+
+  function cloudClient() {
+    return window.PLANOGRAM_CLOUD_CLIENT || null;
+  }
+
+  function cloudNote(message, isError = false) {
+    const node = document.getElementById("cloudSyncStatus");
+    if (!node) return;
+    node.textContent = message;
+    node.classList.toggle("error", isError);
+  }
+
+  function setCloudSessionMeta(revision) {
+    multiStoreCloudRevision = Number(revision) || 0;
+    window.sessionStorage.setItem(CLOUD_SESSION_PREFIX + selectedStoreId, JSON.stringify({
+      revision: multiStoreCloudRevision,
+      updatedAt: new Date().toISOString()
+    }));
+  }
+
+  function persistCloudBase(data, revision) {
+    multiStoreCloudBaseData = clone(data);
+    setCloudSessionMeta(revision);
+    try {
+      window.sessionStorage.setItem(CLOUD_BASE_KEY, JSON.stringify({
+        storeId: selectedStoreId,
+        revision: multiStoreCloudRevision,
+        data: multiStoreCloudBaseData
+      }));
+    } catch (error) {
+      console.warn("云端基准快照保存失败；刷新页面后需重新拉取云端数据。", error);
+    }
+  }
+
+  async function requireMultiStoreCloudSession() {
+    const client = cloudClient();
+    if (!client) {
+      cloudNote("云端组件加载失败，请刷新页面后重试。", true);
+      return null;
+    }
+    const { data: { session }, error } = await client.auth.getSession();
+    if (error || !session?.user) {
+      cloudNote(error?.message || "请先登录云端协作账号。", true);
+      return null;
+    }
+    return session;
+  }
+
+  function emptyCloudWrapper() {
+    return {
+      type: CLOUD_WRAPPER_TYPE,
+      schemaVersion: CLOUD_SCHEMA_VERSION,
+      version: "2026.07.29.02",
+      updatedAt: new Date().toISOString(),
+      stores: {},
+      storeMeta: {}
+    };
+  }
+
+  function normalizeCloudPayload(payload) {
+    if (payload?.type === CLOUD_WRAPPER_TYPE && payload.stores && typeof payload.stores === "object") {
+      return {
+        ...clone(payload),
+        type: CLOUD_WRAPPER_TYPE,
+        schemaVersion: CLOUD_SCHEMA_VERSION,
+        stores: clone(payload.stores || {}),
+        storeMeta: clone(payload.storeMeta || {})
+      };
+    }
+    const wrapper = emptyCloudWrapper();
+    if (validData(payload)) {
+      wrapper.stores[ORIGINAL_STORE_ID] = clone(payload);
+      wrapper.storeMeta[ORIGINAL_STORE_ID] = {
+        name: storeName(ORIGINAL_STORE_ID),
+        migratedFromSingleStore: true
+      };
+    }
+    return wrapper;
+  }
+
+  function currentLocalData() {
+    const data = parseJson(window.localStorage.getItem(MAIN_KEY));
+    return validData(data) ? data : buildStoreInitial(selectedStoreId);
+  }
+
+  function sameCloudValue(left, right) {
+    return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  }
+
+  function cloudClone(value) {
+    return value === undefined ? undefined : clone(value);
+  }
+
+  function mergeCloudRecord(base, local, remote, label, conflicts) {
+    if (sameCloudValue(local, base)) return cloudClone(remote);
+    if (sameCloudValue(remote, base)) return cloudClone(local);
+    if (sameCloudValue(local, remote)) return cloudClone(local);
+    if (!base || !local || !remote || typeof base !== "object" || Array.isArray(base) || Array.isArray(local) || Array.isArray(remote)) {
+      conflicts.push(label);
+      return cloudClone(remote);
+    }
+    const merged = { ...cloudClone(remote) };
+    const keys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
+    keys.forEach(key => {
+      if (key === "id" || key === "layers") return;
+      const baseValue = base[key];
+      const localValue = local[key];
+      const remoteValue = remote[key];
+      if (sameCloudValue(localValue, baseValue)) return;
+      if (sameCloudValue(remoteValue, baseValue) || sameCloudValue(localValue, remoteValue)) {
+        merged[key] = cloudClone(localValue);
+        return;
+      }
+      conflicts.push(label + " 字段:" + key);
+    });
+    return merged;
+  }
+
+  function productBlocks(pits) {
+    const map = new Map();
+    (pits || []).forEach(pit => {
+      const list = map.get(pit.productId) || [];
+      list.push(pit);
+      map.set(pit.productId, list);
+    });
+    return map;
+  }
+
+  function mergeLayerPits(basePits, localPits, remotePits, label, conflicts) {
+    if (sameCloudValue(localPits, basePits)) return clone(remotePits || []);
+    if (sameCloudValue(remotePits, basePits)) return clone(localPits || []);
+    if (sameCloudValue(localPits, remotePits)) return clone(localPits || []);
+    const base = productBlocks(basePits);
+    const local = productBlocks(localPits);
+    const remote = productBlocks(remotePits);
+    let merged = clone(remotePits || []);
+    [...local.keys()].forEach(productId => {
+      const baseBlock = base.get(productId) || [];
+      const localBlock = local.get(productId) || [];
+      const remoteBlock = remote.get(productId) || [];
+      const localChanged = !sameCloudValue(localBlock, baseBlock);
+      const remoteChanged = !sameCloudValue(remoteBlock, baseBlock);
+      if (!localChanged) return;
+      if (remoteChanged && !sameCloudValue(localBlock, remoteBlock)) {
+        conflicts.push(label + " SKU:" + productId);
+        return;
+      }
+      merged = merged.filter(pit => pit.productId !== productId);
+      merged.push(...clone(localBlock));
+    });
+    return merged;
+  }
+
+  function mergeCloudGroups(base, local, remote, label, conflicts) {
+    if (!base || !local || !remote) return mergeCloudRecord(base, local, remote, label, conflicts);
+    const baseMeta = { ...base, layers: undefined };
+    const localMeta = { ...local, layers: undefined };
+    const remoteMeta = { ...remote, layers: undefined };
+    const merged = mergeCloudRecord(baseMeta, localMeta, remoteMeta, label, conflicts);
+    merged.layers = { ...clone(remote.layers || {}) };
+    ["A", "B", "C", "D"].forEach(layer => {
+      const baseLayer = base.layers?.[layer] || { pits: [] };
+      const localLayer = local.layers?.[layer] || { pits: [] };
+      const remoteLayer = remote.layers?.[layer] || { pits: [] };
+      const layerMeta = mergeCloudRecord(
+        { ...baseLayer, pits: undefined },
+        { ...localLayer, pits: undefined },
+        { ...remoteLayer, pits: undefined },
+        label + "-" + layer,
+        conflicts
+      );
+      layerMeta.pits = mergeLayerPits(baseLayer.pits, localLayer.pits, remoteLayer.pits, label + "-" + layer, conflicts);
+      merged.layers[layer] = layerMeta;
+    });
+    return merged;
+  }
+
+  function mergeCloudList(baseList, localList, remoteList, label, merger, conflicts) {
+    const map = list => new Map((list || []).map(item => [item.id, item]));
+    const base = map(baseList);
+    const local = map(localList);
+    const remote = map(remoteList);
+    const ids = [
+      ...(remoteList || []).map(item => item.id),
+      ...(localList || []).map(item => item.id).filter(id => !remote.has(id))
+    ];
+    return ids.map(id => merger(base.get(id), local.get(id), remote.get(id), label + " " + id, conflicts));
+  }
+
+  function mergeStoreData(base, local, remote) {
+    if (!base) return { merged: clone(local), conflicts: [] };
+    if (!remote) return { merged: clone(local), conflicts: [] };
+    const conflicts = [];
+    const merged = { ...cloudClone(remote) };
+    merged.categories = [...new Set([...(remote.categories || []), ...(local.categories || [])])];
+    merged.products = mergeCloudList(base.products, local.products, remote.products, "SKU", mergeCloudRecord, conflicts);
+    merged.groups = mergeCloudList(base.groups, local.groups, remote.groups, "货架组", mergeCloudGroups, conflicts);
+    const metaKeys = new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(remote)]);
+    metaKeys.forEach(key => {
+      if (["categories", "products", "groups"].includes(key)) return;
+      const baseValue = base[key];
+      const localValue = local[key];
+      const remoteValue = remote[key];
+      if (sameCloudValue(localValue, baseValue)) return;
+      if (sameCloudValue(remoteValue, baseValue) || sameCloudValue(localValue, remoteValue)) merged[key] = cloudClone(localValue);
+      else conflicts.push("门店字段:" + key);
+    });
+    return { merged, conflicts };
+  }
+
+  async function readCloudDocument() {
+    const client = cloudClient();
+    const { data, error } = await client
+      .from("planogram_documents")
+      .select("payload,revision,updated_at")
+      .eq("id", CLOUD_DOCUMENT_ID)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async function saveCloudWrapper(wrapper, expectedRevision) {
+    const client = cloudClient();
+    wrapper.updatedAt = new Date().toISOString();
+    const { data, error } = await client.rpc("save_planogram_document", {
+      p_payload: wrapper,
+      p_expected_revision: expectedRevision
+    });
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    return Number(row?.revision) || Number(expectedRevision) + 1;
+  }
+
+  function applyCloudStoreLocally(data, revision, pendingExport = false) {
+    persistCloudBase(data, revision);
+    writeRaw(storeKey(selectedStoreId), JSON.stringify(data));
+    writeRaw(MAIN_KEY, JSON.stringify(data));
+    writeRaw(ACTIVE_KEY, selectedStoreId);
+    writeRaw(SELECTED_KEY, selectedStoreId);
+    window.sessionStorage.setItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId, JSON.stringify({ revision }));
+    if (pendingExport) window.sessionStorage.setItem(CLOUD_EXPORT_FLAG, selectedStoreId);
+    window.location.reload();
+  }
+
+  async function pullCurrentStoreCloud(options = {}) {
+    if (!await requireMultiStoreCloudSession()) return;
+    cloudNote("正在拉取“" + storeName(selectedStoreId) + "”云端数据…");
+    try {
+      const remote = await readCloudDocument();
+      const wrapper = normalizeCloudPayload(remote?.payload);
+      const storeData = wrapper.stores[selectedStoreId];
+      setCloudSessionMeta(remote?.revision || 0);
+      if (!validData(storeData)) {
+        cloudNote("“" + storeName(selectedStoreId) + "”云端尚未初始化。确认本地陈列后点击“保存至云端”即可创建。", true);
+        return;
+      }
+      cloudNote("已拉取“" + storeName(selectedStoreId) + "”云端第 " + (remote?.revision || 0) + " 版，正在刷新页面…");
+      applyCloudStoreLocally(clone(storeData), remote?.revision || 0, Boolean(options.exportAfterPull));
+    } catch (error) {
+      cloudNote(error.message || "云端数据拉取失败。", true);
+    }
+  }
+
+  async function pushCurrentStoreCloud(attempt = 0) {
+    const session = await requireMultiStoreCloudSession();
+    if (!session) return;
+    cloudNote("正在保存“" + storeName(selectedStoreId) + "”至云端…");
+    try {
+      const localData = currentLocalData();
+      const remote = await readCloudDocument();
+      const wrapper = normalizeCloudPayload(remote?.payload);
+      const remoteStoreData = wrapper.stores[selectedStoreId];
+      let nextStoreData = clone(localData);
+
+      if (validData(remoteStoreData)) {
+        if (!multiStoreCloudBaseData) {
+          cloudNote("当前页面尚未建立该门店的云端基准，请先点击“拉取云端数据”，再修改并保存。", true);
+          return;
+        }
+        const result = mergeStoreData(multiStoreCloudBaseData, localData, remoteStoreData);
+        if (result.conflicts.length) {
+          cloudNote("发现同一门店数据冲突：" + result.conflicts.slice(0, 3).join("、") + "。本地修改仍保留，请先拉取核对后再保存。", true);
+          return;
+        }
+        nextStoreData = result.merged;
+      }
+
+      wrapper.stores[selectedStoreId] = clone(nextStoreData);
+      wrapper.storeMeta[selectedStoreId] = {
+        ...(wrapper.storeMeta[selectedStoreId] || {}),
+        name: storeName(selectedStoreId),
+        updatedAt: new Date().toISOString(),
+        updatedBy: session.user.email || session.user.id
+      };
+
+      const revision = await saveCloudWrapper(wrapper, remote?.revision || 0);
+      persistCloudBase(nextStoreData, revision);
+      writeRaw(storeKey(selectedStoreId), JSON.stringify(nextStoreData));
+      writeRaw(MAIN_KEY, JSON.stringify(nextStoreData));
+      cloudNote("“" + storeName(selectedStoreId) + "”已保存至云端第 " + revision + " 版；其他门店数据未被覆盖。");
+    } catch (error) {
+      if (error?.code === "P0001" && attempt < 1) {
+        cloudNote("云端刚被其他成员更新，正在自动合并后重试…");
+        await pushCurrentStoreCloud(attempt + 1);
+        return;
+      }
+      cloudNote(error.message || "云端保存失败。", true);
+    }
+  }
+
+  async function restoreCurrentStoreCloud() {
+    const passwordInput = document.getElementById("restorePasswordInput");
+    if (passwordInput?.value !== "666888") {
+      cloudNote("恢复密码不正确。", true);
+      return;
+    }
+    if (!await requireMultiStoreCloudSession()) return;
+    if (!window.confirm("确认仅恢复“" + storeName(selectedStoreId) + "”的云端首版吗？其他门店不会受影响。")) return;
+    cloudNote("正在恢复“" + storeName(selectedStoreId) + "”云端首版…");
+    try {
+      const remote = await readCloudDocument();
+      const wrapper = normalizeCloudPayload(remote?.payload);
+      const restored = buildStoreInitial(selectedStoreId);
+      wrapper.stores[selectedStoreId] = clone(restored);
+      wrapper.storeMeta[selectedStoreId] = {
+        ...(wrapper.storeMeta[selectedStoreId] || {}),
+        name: storeName(selectedStoreId),
+        restoredAt: new Date().toISOString()
+      };
+      const revision = await saveCloudWrapper(wrapper, remote?.revision || 0);
+      const dialog = document.getElementById("resetConfirmDialog");
+      if (dialog?.open) dialog.close();
+      cloudNote("“" + storeName(selectedStoreId) + "”已恢复为云端第 " + revision + " 版，正在刷新页面…");
+      applyCloudStoreLocally(restored, revision, false);
+    } catch (error) {
+      cloudNote(error.message || "恢复云端首版失败。", true);
+    }
+  }
+
+  function interceptButton(id, handler) {
+    const node = document.getElementById(id);
+    if (!node || node.dataset.multistoreCloudBound === "1") return;
+    node.dataset.multistoreCloudBound = "1";
+    node.addEventListener("click", event => {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      Promise.resolve(handler(event)).catch(error => cloudNote(error.message || "云端操作失败。", true));
+    }, true);
+  }
+
+  function installMultiStoreCloudControls() {
+    ["cloudBtn", "exportCloudExcelBtn", "resetBtn"].forEach(id => {
+      const node = document.getElementById(id);
+      if (node) node.hidden = false;
+    });
+
+    const cloudTitle = document.querySelector("#cloudDialog .dialog-header h2");
+    if (cloudTitle) cloudTitle.textContent = storeName(selectedStoreId) + "｜云端数据协作";
+    const cloudHelper = document.querySelector("#cloudDialog .admin-section:nth-of-type(2) p");
+    if (cloudHelper) cloudHelper.textContent = "当前仅拉取和保存已选择门店；各门店云端数据相互独立，不会覆盖。";
+    const resetTitle = document.querySelector("#resetConfirmDialog .dialog-header h2");
+    if (resetTitle) resetTitle.textContent = "恢复当前门店云端底表";
+    const resetHelper = document.querySelector("#resetConfirmDialog .helper");
+    if (resetHelper) resetHelper.textContent = "输入密码后，仅用当前门店首版覆盖该门店的云端和本机数据，其他门店不受影响。";
+
+    interceptButton("cloudPullBtn", () => pullCurrentStoreCloud());
+    interceptButton("cloudPushBtn", () => pushCurrentStoreCloud());
+    interceptButton("exportCloudExcelBtn", () => pullCurrentStoreCloud({ exportAfterPull: true }));
+    interceptButton("confirmResetBtn", restoreCurrentStoreCloud);
+
+    const pendingExportStore = window.sessionStorage.getItem(CLOUD_EXPORT_FLAG);
+    if (pendingExportStore === selectedStoreId) {
+      window.sessionStorage.removeItem(CLOUD_EXPORT_FLAG);
+      window.setTimeout(() => document.getElementById("exportExcelBtn")?.click(), 150);
+    }
   }
 
   function pointDialogHtml(config) {
@@ -210,13 +623,11 @@
     holder.querySelector("#storeSelect")?.addEventListener("change", event => switchStore(event.target.value));
     holder.querySelector("#resetCurrentStoreBtn")?.addEventListener("click", resetCurrentStore);
 
+    installMultiStoreCloudControls();
+
     if (!context.isOriginalStore) {
-      ["cloudBtn", "exportCloudExcelBtn", "resetBtn"].forEach(id => {
-        const node = document.getElementById(id);
-        if (node) node.hidden = true;
-      });
       const status = document.getElementById("statusBar");
-      if (status) status.textContent = `${context.storeName}使用独立门店数据；产品池共用，门店坑位与本地调整互不覆盖。`;
+      if (status) status.textContent = `${context.storeName}使用独立门店数据；本地调整与云端协作均按门店隔离。`;
       const dialog = document.createElement("dialog");
       dialog.id = "storePointDialog";
       dialog.className = "editor-dialog admin-dialog store-point-dialog";
