@@ -646,6 +646,157 @@
     }, true);
   }
 
+  const exportInteger = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.round(parsed) : fallback;
+  };
+
+  const exportNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  function exportLayer(group, layer) {
+    const source = group?.layers?.[layer] || {};
+    return {
+      capacity: Math.max(0, exportInteger(source.capacity, 0)),
+      pits: Array.isArray(source.pits) ? source.pits : []
+    };
+  }
+
+  function buildPlacedOnlyExportRows(data) {
+    const productsById = new Map((data.products || []).map(product => [product.id, product]));
+    const placedProductIds = new Set();
+
+    (data.groups || []).forEach(group => {
+      ["D", "C", "B", "A"].forEach(layer => {
+        exportLayer(group, layer).pits.forEach(pit => {
+          const product = productsById.get(pit.productId);
+          if (product && product.status !== "eliminated") placedProductIds.add(product.id);
+        });
+      });
+    });
+
+    const products = (data.products || [])
+      .filter(product => placedProductIds.has(product.id) && product.status !== "eliminated")
+      .map(product => ({
+        "一级品类": product.category || "",
+        "二级品类": product.secondCategory || "",
+        "三级品类": product.thirdCategory || "",
+        "四级品类": product.fourthCategory || "",
+        "SKU编码": product.barcode || "",
+        "SKU名称": product.name || "",
+        "等级": product.grade || "",
+        "新品状态": product.newFlag || "",
+        "长(mm)": exportInteger(product.faceWidth, 0),
+        "宽(mm)": exportInteger(product.depth, 0),
+        "高(mm)": exportInteger(product.height, 0),
+        "箱规(件/箱)": exportInteger(product.packSize, 0),
+        "满陈箱数": exportInteger(product.shelfBoxes, 0),
+        "周转天数": exportNumber(product.turnoverDays, 0),
+        "基础坑位": exportInteger(product.basePits, 0),
+        "计划坑位": exportInteger(product.plannedPits, 0),
+        "状态": "陈列中"
+      }));
+
+    const layerRows = (data.groups || []).flatMap(group => ["D", "C", "B", "A"].map(layer => {
+      const layerData = exportLayer(group, layer);
+      const visiblePits = layerData.pits.filter(pit => placedProductIds.has(pit.productId));
+      const used = visiblePits.reduce((sum, pit) => {
+        const product = productsById.get(pit.productId);
+        return sum + Math.max(0, exportInteger(product?.faceWidth, 0));
+      }, 0);
+      return {
+        "一级品类": group.category || "",
+        "二级品类": group.secondCategory || "",
+        "货架组": group.id || "",
+        "货架类型": group.type || "",
+        "层级": layer,
+        "容量(mm)": layerData.capacity,
+        "已用(mm)": used,
+        "余量(mm)": layerData.capacity - used,
+        "坑位数": visiblePits.length
+      };
+    }));
+
+    const placements = (data.groups || []).flatMap(group => ["D", "C", "B", "A"].flatMap(layer => {
+      const layerData = exportLayer(group, layer);
+      let visibleOrder = 0;
+      return layerData.pits.flatMap(pit => {
+        if (!placedProductIds.has(pit.productId)) return [];
+        const product = productsById.get(pit.productId);
+        if (!product || product.status === "eliminated") return [];
+        visibleOrder += 1;
+        return [{
+          "货架组": group.id || "",
+          "层级": layer,
+          "顺序": visibleOrder,
+          "坑位ID": pit.id || "",
+          "SKU编码": product.barcode || pit.barcode || "",
+          "SKU名称": product.name || "",
+          "坑位类型": pit.kind === "expansion" ? "扩陈" : "基础"
+        }];
+      });
+    }));
+
+    return { products, layerRows, placements, placedProductIds };
+  }
+
+  function safeExportFileName(value) {
+    return String(value || "当前云端陈列底表").replace(/[\\/:*?"<>|]/g, "_");
+  }
+
+  function exportPlacedOnlyCloudExcel() {
+    const button = document.getElementById("exportCloudExcelBtn");
+    const originalText = button?.textContent || "导出当前云端 Excel";
+    try {
+      if (!window.XLSX) throw new Error("Excel导出组件未加载，请联网刷新页面后重试。");
+      const data = currentLocalData();
+      if (!validData(data)) throw new Error("未读取到当前门店云端陈列数据。");
+
+      const rows = buildPlacedOnlyExportRows(data);
+      if (!rows.products.length || !rows.placements.length) {
+        throw new Error("当前门店云端数据中没有陈列图上的SKU可导出。");
+      }
+
+      if (button) {
+        button.disabled = true;
+        button.textContent = "正在导出…";
+      }
+
+      const workbook = window.XLSX.utils.book_new();
+      window.XLSX.utils.book_append_sheet(workbook, window.XLSX.utils.json_to_sheet(rows.products), "SKU底表");
+      window.XLSX.utils.book_append_sheet(workbook, window.XLSX.utils.json_to_sheet(rows.layerRows), "货架层");
+      window.XLSX.utils.book_append_sheet(workbook, window.XLSX.utils.json_to_sheet(rows.placements), "陈列坑位");
+      const date = new Date().toISOString().slice(0, 10);
+      window.XLSX.writeFile(
+        workbook,
+        safeExportFileName(`${storeName(selectedStoreId)}_当前云端陈列中SKU底表_${date}.xlsx`)
+      );
+
+      const message = `已导出“${storeName(selectedStoreId)}”当前云端Excel：仅含陈列图上的${rows.products.length}个SKU、${rows.placements.length}个坑位；未放入池和淘汰池SKU均未导出。`;
+      const status = document.getElementById("statusBar");
+      if (status) {
+        status.textContent = message;
+        status.classList.remove("error");
+      }
+      cloudNote(message);
+    } catch (error) {
+      const message = error?.message || "当前云端Excel导出失败。";
+      const status = document.getElementById("statusBar");
+      if (status) {
+        status.textContent = message;
+        status.classList.add("error");
+      }
+      cloudNote(message, true);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }
+  }
+
   function installMultiStoreCloudControls() {
     ["cloudBtn", "exportCloudExcelBtn", "resetBtn"].forEach(id => {
       const node = document.getElementById(id);
@@ -669,7 +820,7 @@
     const pendingExportStore = window.sessionStorage.getItem(CLOUD_EXPORT_FLAG);
     if (pendingExportStore === selectedStoreId) {
       window.sessionStorage.removeItem(CLOUD_EXPORT_FLAG);
-      window.setTimeout(() => document.getElementById("exportExcelBtn")?.click(), 150);
+      window.setTimeout(exportPlacedOnlyCloudExcel, 180);
     }
   }
 
