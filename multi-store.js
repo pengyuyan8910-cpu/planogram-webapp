@@ -16,6 +16,8 @@
   const originalData = JSON.parse(JSON.stringify(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] }));
   const allocationRoot = window.PLANOGRAM_STORE_ALLOCATIONS || { stores: {} };
   const storeConfigs = allocationRoot.stores || {};
+  const CONTINUOUS_LAYOUT_VERSION = allocationRoot.version || "1";
+  const LAYERS = ["A", "B", "C", "D"];
   const nativeSetItem = Storage.prototype.setItem;
   const nativeRemoveItem = Storage.prototype.removeItem;
 
@@ -79,6 +81,8 @@
       source: `多门店陈列生成-${config.name}`,
       storeId,
       storeName: config.name,
+      layoutVersion: config.layoutVersion || CONTINUOUS_LAYOUT_VERSION,
+      layoutMode: config.layoutMode || "continuous-shelf-bands",
       categories,
       products,
       groups,
@@ -87,18 +91,114 @@
     };
   }
 
+
+  function sameJson(left, right) {
+    return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  }
+
+  function migrateStoreLayout(storeId, inputData) {
+    if (!validData(inputData) || storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
+      return validData(inputData) ? clone(inputData) : inputData;
+    }
+
+    const target = buildStoreInitial(storeId);
+    const targetVersion = target.layoutVersion || CONTINUOUS_LAYOUT_VERSION;
+    const targetGroups = target.groups || [];
+    const inputGroups = inputData.groups || [];
+    const targetIds = targetGroups.map(group => group.id);
+    const inputIds = inputGroups.map(group => group.id);
+    const alreadyContinuous =
+      inputData.layoutVersion === targetVersion &&
+      sameJson(targetIds, inputIds) &&
+      targetGroups.every((group, index) =>
+        sameJson(group.sourceGroupIds || [group.id], inputGroups[index]?.sourceGroupIds || [inputGroups[index]?.id])
+      );
+
+    if (alreadyContinuous) return clone(inputData);
+
+    const currentById = new Map(inputGroups.map(group => [group.id, group]));
+    const migratedGroups = targetGroups.map(template => {
+      const targetGroup = clone(template);
+      const sourceIds = targetGroup.sourceGroupIds || [targetGroup.id];
+      const existingBand = currentById.get(targetGroup.id);
+      const useExistingBand =
+        existingBand &&
+        (Array.isArray(existingBand.sourceGroupIds) || sourceIds.length === 1 || !sourceIds.some(id => currentById.has(id)));
+      const sourceGroups = useExistingBand
+        ? [existingBand]
+        : sourceIds.map(id => currentById.get(id)).filter(Boolean);
+
+      LAYERS.forEach(layer => {
+        const targetLayer = targetGroup.layers?.[layer] || { capacity: 1200, pits: [] };
+        const collected = [];
+        if (sourceGroups.length) {
+          sourceGroups.forEach(sourceGroup => {
+            const sourceLayer = sourceGroup.layers?.[layer] || { pits: [] };
+            (sourceLayer.pits || []).forEach((pit, index) => {
+              collected.push({
+                ...clone(pit),
+                sourceGroupId: pit.sourceGroupId || (
+                  sourceGroups.length === 1 && Array.isArray(sourceGroup.sourceGroupIds)
+                    ? pit.sourceGroupId || ""
+                    : sourceGroup.id
+                ),
+                sourcePitOrder: pit.sourcePitOrder || index + 1
+              });
+            });
+          });
+        }
+        targetGroup.layers[layer] = {
+          ...targetLayer,
+          pits: sourceGroups.length ? collected : clone(targetLayer.pits || [])
+        };
+      });
+      return targetGroup;
+    });
+
+    const migrated = {
+      ...clone(inputData),
+      version: target.version,
+      source: target.source,
+      storeId,
+      storeName: target.storeName,
+      layoutVersion: targetVersion,
+      layoutMode: target.layoutMode,
+      categories: clone(inputData.categories || target.categories || []),
+      products: clone(inputData.products || target.products || []),
+      groups: migratedGroups,
+      storeMeta: {
+        ...clone(inputData.storeMeta || {}),
+        ...clone(target.storeMeta || {}),
+        migratedToContinuousBandsAt: new Date().toISOString()
+      },
+      generatedAt: target.generatedAt
+    };
+    return migrated;
+  }
+
+  function migrateAndPersistStore(storeId, data) {
+    const migrated = migrateStoreLayout(storeId, data);
+    if (validData(migrated) && !sameJson(migrated, data)) {
+      writeRaw(storeKey(storeId), JSON.stringify(migrated));
+    }
+    return migrated;
+  }
+
   function writeRaw(key, value) {
     nativeSetItem.call(window.localStorage, key, value);
   }
 
   function saveMainToStore(storeId) {
-    const current = window.localStorage.getItem(MAIN_KEY);
-    if (validData(parseJson(current))) writeRaw(storeKey(storeId), current);
+    const current = parseJson(window.localStorage.getItem(MAIN_KEY));
+    if (!validData(current)) return;
+    const migrated = migrateStoreLayout(storeId, current);
+    writeRaw(storeKey(storeId), JSON.stringify(migrated));
   }
 
   function loadStoreState(storeId) {
     const saved = parseJson(window.localStorage.getItem(storeKey(storeId)));
-    return validData(saved) ? saved : buildStoreInitial(storeId);
+    const source = validData(saved) ? saved : buildStoreInitial(storeId);
+    return migrateAndPersistStore(storeId, source);
   }
 
   function prepareSelectedStore() {
@@ -120,6 +220,12 @@
       writeRaw(MAIN_KEY, JSON.stringify(loadStoreState(selected)));
     } else if (!validData(currentMain)) {
       writeRaw(MAIN_KEY, JSON.stringify(loadStoreState(selected)));
+    } else {
+      const migratedCurrent = migrateStoreLayout(selected, currentMain);
+      if (!sameJson(migratedCurrent, currentMain)) {
+        writeRaw(MAIN_KEY, JSON.stringify(migratedCurrent));
+        writeRaw(storeKey(selected), JSON.stringify(migratedCurrent));
+      }
     }
 
     writeRaw(SELECTED_KEY, selected);
@@ -141,14 +247,14 @@
   const baseSnapshot = parseJson(window.sessionStorage.getItem(CLOUD_BASE_KEY));
   if (baseSnapshot?.storeId === selectedStoreId && baseSnapshot?.revision >= 0 && validData(baseSnapshot.data)) {
     multiStoreCloudRevision = Number(baseSnapshot.revision) || 0;
-    multiStoreCloudBaseData = clone(baseSnapshot.data);
+    multiStoreCloudBaseData = migrateStoreLayout(selectedStoreId, baseSnapshot.data);
   } else {
     const pulledFlag = parseJson(window.sessionStorage.getItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId));
     if (pulledFlag?.revision >= 0) {
       const pulledState = parseJson(window.localStorage.getItem(MAIN_KEY));
       if (validData(pulledState)) {
         multiStoreCloudRevision = Number(pulledFlag.revision) || 0;
-        multiStoreCloudBaseData = clone(pulledState);
+        multiStoreCloudBaseData = migrateStoreLayout(selectedStoreId, pulledState);
       }
       window.sessionStorage.removeItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId);
     } else {
@@ -194,7 +300,8 @@
   }
 
   function persistCloudBase(data, revision) {
-    multiStoreCloudBaseData = clone(data);
+    const migrated = migrateStoreLayout(selectedStoreId, data);
+    multiStoreCloudBaseData = clone(migrated);
     setCloudSessionMeta(revision);
     try {
       window.sessionStorage.setItem(CLOUD_BASE_KEY, JSON.stringify({
@@ -225,7 +332,7 @@
     return {
       type: CLOUD_WRAPPER_TYPE,
       schemaVersion: CLOUD_SCHEMA_VERSION,
-      version: "2026.07.29.02",
+      version: "2026.07.29.06",
       updatedAt: new Date().toISOString(),
       stores: {},
       storeMeta: {}
@@ -255,7 +362,13 @@
 
   function currentLocalData() {
     const data = parseJson(window.localStorage.getItem(MAIN_KEY));
-    return validData(data) ? data : buildStoreInitial(selectedStoreId);
+    const source = validData(data) ? data : buildStoreInitial(selectedStoreId);
+    const migrated = migrateStoreLayout(selectedStoreId, source);
+    if (!sameJson(migrated, source)) {
+      writeRaw(storeKey(selectedStoreId), JSON.stringify(migrated));
+      writeRaw(MAIN_KEY, JSON.stringify(migrated));
+    }
+    return migrated;
   }
 
   function sameCloudValue(left, right) {
@@ -363,6 +476,9 @@
   }
 
   function mergeStoreData(base, local, remote) {
+    base = validData(base) ? migrateStoreLayout(selectedStoreId, base) : base;
+    local = validData(local) ? migrateStoreLayout(selectedStoreId, local) : local;
+    remote = validData(remote) ? migrateStoreLayout(selectedStoreId, remote) : remote;
     if (!base) return { merged: clone(local), conflicts: [] };
     if (!remote) return { merged: clone(local), conflicts: [] };
     const conflicts = [];
@@ -407,9 +523,10 @@
   }
 
   function applyCloudStoreLocally(data, revision, pendingExport = false) {
-    persistCloudBase(data, revision);
-    writeRaw(storeKey(selectedStoreId), JSON.stringify(data));
-    writeRaw(MAIN_KEY, JSON.stringify(data));
+    const migrated = migrateStoreLayout(selectedStoreId, data);
+    persistCloudBase(migrated, revision);
+    writeRaw(storeKey(selectedStoreId), JSON.stringify(migrated));
+    writeRaw(MAIN_KEY, JSON.stringify(migrated));
     writeRaw(ACTIVE_KEY, selectedStoreId);
     writeRaw(SELECTED_KEY, selectedStoreId);
     window.sessionStorage.setItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId, JSON.stringify({ revision }));
@@ -423,7 +540,10 @@
     try {
       const remote = await readCloudDocument();
       const wrapper = normalizeCloudPayload(remote?.payload);
-      const storeData = wrapper.stores[selectedStoreId];
+      const rawStoreData = wrapper.stores[selectedStoreId];
+      const storeData = validData(rawStoreData)
+        ? migrateStoreLayout(selectedStoreId, rawStoreData)
+        : rawStoreData;
       setCloudSessionMeta(remote?.revision || 0);
       if (!validData(storeData)) {
         cloudNote("“" + storeName(selectedStoreId) + "”云端尚未初始化。确认本地陈列后点击“保存至云端”即可创建。", true);
@@ -444,7 +564,10 @@
       const localData = currentLocalData();
       const remote = await readCloudDocument();
       const wrapper = normalizeCloudPayload(remote?.payload);
-      const remoteStoreData = wrapper.stores[selectedStoreId];
+      const rawRemoteStoreData = wrapper.stores[selectedStoreId];
+      const remoteStoreData = validData(rawRemoteStoreData)
+        ? migrateStoreLayout(selectedStoreId, rawRemoteStoreData)
+        : rawRemoteStoreData;
       let nextStoreData = clone(localData);
 
       if (validData(remoteStoreData)) {
@@ -619,7 +742,7 @@
 
     if (!context.isOriginalStore) {
       const status = document.getElementById("statusBar");
-      if (status) status.textContent = `${context.storeName}使用独立门店数据；本地调整与云端协作均按门店隔离。`;
+      if (status) status.textContent = `${context.storeName}已按实际连续货架带展示；本地调整与云端协作均按门店隔离。`;
       const dialog = document.createElement("dialog");
       dialog.id = "storePointDialog";
       dialog.className = "editor-dialog admin-dialog store-point-dialog";

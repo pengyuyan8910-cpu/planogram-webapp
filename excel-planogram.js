@@ -3,9 +3,8 @@
 
   const MAIN_STORAGE_KEY = "planogram-webapp-state-v1";
   const LAYERS = ["D", "C", "B", "A"];
-  const GRID_COLUMNS = 36;
+  const MIN_GRID_COLUMNS = 36;
   const GRID_START_COLUMN = 4; // D列
-  const GRID_END_COLUMN = GRID_START_COLUMN + GRID_COLUMNS - 1;
   const NAVY = "FF27486D";
   const BLUE = "FF2563EB";
   const PALE_BLUE = "FFE7F0FA";
@@ -100,13 +99,13 @@
     ].join("\n");
   }
 
-  function allocateGridWidths(pits, productsById, capacity) {
+  function allocateGridWidths(pits, productsById, capacity, gridColumns) {
     if (!pits.length) return [];
     const physicalWidths = pits.map(pit => Math.max(1, integer(productsById.get(pit.productId)?.faceWidth, 1)));
     const used = physicalWidths.reduce((sum, value) => sum + value, 0);
     const target = Math.min(
-      GRID_COLUMNS,
-      Math.max(pits.length, Math.round((Math.min(used, capacity) / capacity) * GRID_COLUMNS))
+      gridColumns,
+      Math.max(pits.length, Math.round((Math.min(used, capacity) / capacity) * gridColumns))
     );
     const allocations = Array(pits.length).fill(1);
     let remaining = target - pits.length;
@@ -132,6 +131,43 @@
     return allocations;
   }
 
+
+  function gridColumnsForGroups(groups) {
+    let columns = MIN_GRID_COLUMNS;
+    groups.forEach(group => {
+      LAYERS.forEach(layer => {
+        const layerData = getLayer(group, layer);
+        const physicalShelves = Math.max(
+          1,
+          integer(group.physicalShelfCount, Math.round(layerData.capacity / 1200) || 1)
+        );
+        columns = Math.max(
+          columns,
+          Math.ceil(layerData.capacity / 100),
+          layerData.pits.length + Math.max(4, physicalShelves)
+        );
+      });
+    });
+    return Math.min(180, columns);
+  }
+
+  function physicalShelfForPit(group, layerData, productsById, pitIndex) {
+    const sourceIds = Array.isArray(group.sourceGroupIds) && group.sourceGroupIds.length
+      ? group.sourceGroupIds
+      : [group.id];
+    if (sourceIds.length <= 1) return sourceIds[0] || group.id || "";
+    const perShelf = Math.max(1, Math.round(layerData.capacity / sourceIds.length));
+    let cursor = 0;
+    for (let index = 0; index <= pitIndex; index += 1) {
+      if (index === pitIndex) {
+        return sourceIds[Math.min(sourceIds.length - 1, Math.floor(cursor / perShelf))] || sourceIds[sourceIds.length - 1];
+      }
+      const pit = layerData.pits[index];
+      cursor += Math.max(0, integer(productsById.get(pit.productId)?.faceWidth, 0));
+    }
+    return sourceIds[sourceIds.length - 1] || group.id || "";
+  }
+
   function applyThinBorder(cell) {
     cell.border = {
       top: { style: "thin", color: { argb: BORDER } },
@@ -155,6 +191,9 @@
   }
 
   function addVisualSheet(workbook, data, category, storeName) {
+    const groups = data.groups.filter(group => group.category === category);
+    const gridColumns = gridColumnsForGroups(groups);
+    const gridEndColumn = GRID_START_COLUMN + gridColumns - 1;
     const sheet = workbook.addWorksheet(safeSheetName(`陈列图_${category}`, "陈列图"), {
       views: [{ state: "frozen", ySplit: 3 }],
       pageSetup: {
@@ -171,11 +210,11 @@
     sheet.getColumn(1).width = 4.5;
     sheet.getColumn(2).width = 7;
     sheet.getColumn(3).width = 8;
-    for (let column = GRID_START_COLUMN; column <= GRID_END_COLUMN; column += 1) {
-      sheet.getColumn(column).width = 3.6;
+    for (let column = GRID_START_COLUMN; column <= gridEndColumn; column += 1) {
+      sheet.getColumn(column).width = gridColumns > 100 ? 2.2 : (gridColumns > 60 ? 2.8 : 3.6);
     }
 
-    const endColumnName = excelColumnName(GRID_END_COLUMN);
+    const endColumnName = excelColumnName(gridEndColumn);
     sheet.mergeCells(`A1:${endColumnName}1`);
     const title = sheet.getCell("A1");
     title.value = `${storeName}｜${category}｜可编辑Excel陈列图`;
@@ -192,14 +231,13 @@
     note.alignment = { vertical: "middle", horizontal: "left", wrapText: true };
     sheet.getRow(2).height = 26;
 
-    const groups = data.groups.filter(group => group.category === category);
     const productsById = new Map(data.products.map(product => [product.id, product]));
     let row = 4;
 
     groups.forEach((group, groupIndex) => {
-      const headerEnd = GRID_END_COLUMN;
+      const headerEnd = gridEndColumn;
       const headerCell = styleMergedRange(sheet, row, 1, row, headerEnd, {
-        value: `${group.secondCategory || "未分类"}｜${group.id}｜${group.type || "标准货架"}`,
+        value: `${group.secondCategory || "未分类"}｜${group.id}｜${group.type || "标准货架"}｜${integer(group.physicalShelfCount, 1)}节连续`,
         fill: NAVY,
         font: { name: "Microsoft YaHei", size: 12, bold: true, color: { argb: WHITE } },
         alignment: { vertical: "middle", horizontal: "left" }
@@ -215,7 +253,7 @@
 
       LAYERS.forEach(layer => {
         const layerData = getLayer(group, layer);
-        const allocations = allocateGridWidths(layerData.pits, productsById, layerData.capacity);
+        const allocations = allocateGridWidths(layerData.pits, productsById, layerData.capacity, gridColumns);
         const used = layerData.pits.reduce((sum, pit) => sum + Math.max(0, integer(productsById.get(pit.productId)?.faceWidth, 0)), 0);
         const remainingMm = Math.max(0, layerData.capacity - used);
 
@@ -227,9 +265,9 @@
 
         let currentColumn = GRID_START_COLUMN;
         layerData.pits.forEach((pit, pitIndex) => {
-          if (currentColumn > GRID_END_COLUMN) return;
+          if (currentColumn > gridEndColumn) return;
           const allocated = Math.max(1, allocations[pitIndex] || 1);
-          const endColumn = Math.min(GRID_END_COLUMN, currentColumn + allocated - 1);
+          const endColumn = Math.min(gridEndColumn, currentColumn + allocated - 1);
           const product = productsById.get(pit.productId) || {
             id: pit.productId,
             name: "未匹配SKU",
@@ -249,8 +287,8 @@
           currentColumn = endColumn + 1;
         });
 
-        if (currentColumn <= GRID_END_COLUMN) {
-          styleMergedRange(sheet, row, currentColumn, row, GRID_END_COLUMN, {
+        if (currentColumn <= gridEndColumn) {
+          styleMergedRange(sheet, row, currentColumn, row, gridEndColumn, {
             value: remainingMm > 0 ? `余量 ${remainingMm}mm` : "",
             fill: PALE_GRAY,
             font: { name: "Microsoft YaHei", size: 9, color: { argb: MUTED } },
@@ -283,8 +321,9 @@
       views: [{ state: "frozen", ySplit: 1 }]
     });
     const headers = [
-      "门店", "一级类目", "二级类目", "三级类目", "货架组", "货架类型", "层级", "坑位顺序",
-      "坑位类型", "SKU名称", "条码", "等级", "新老品", "正面宽度mm", "深度mm", "高度mm",
+      "门店", "一级类目", "二级类目", "三级类目", "连续货架带", "货架类型", "连续节数", "包含货架节",
+      "实际货架节（按横向位置计算）", "层级", "坑位顺序", "坑位类型", "SKU名称", "条码", "等级", "新老品",
+      "正面宽度mm", "深度mm", "高度mm",
       "满陈箱数", "单坑最大箱数", "纵深箱数", "堆叠箱数", "计划坑位数", "基础坑位数", "周转天数",
       "层容量mm", "层已用mm", "层余量mm", "SKU ID", "坑位ID"
     ];
@@ -305,6 +344,9 @@
             product.thirdCategory || pit.thirdCategory || group.thirdCategory || "",
             group.id || "",
             group.type || "",
+            integer(group.physicalShelfCount, 1),
+            (group.sourceGroupIds || [group.id]).join("、"),
+            physicalShelfForPit(group, layerData, productsById, index),
             layer,
             index + 1,
             pit.kind === "expansion" ? "扩陈坑位" : "基础坑位",
@@ -351,7 +393,7 @@
       });
     });
 
-    const widths = [18, 12, 16, 16, 12, 12, 8, 10, 12, 30, 18, 8, 10, 13, 10, 10, 12, 14, 12, 12, 12, 12, 12, 12, 12, 12, 22, 28];
+    const widths = [18, 12, 16, 16, 18, 12, 10, 28, 20, 8, 10, 12, 30, 18, 8, 10, 13, 10, 10, 12, 14, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12];
     widths.forEach((width, index) => { sheet.getColumn(index + 1).width = width; });
     sheet.autoFilter = { from: "A1", to: `${excelColumnName(headers.length)}${Math.max(1, sheet.rowCount)}` };
     return sheet;
