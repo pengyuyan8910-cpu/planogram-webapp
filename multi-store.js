@@ -17,7 +17,7 @@
   const allocationRoot = window.PLANOGRAM_STORE_ALLOCATIONS || { stores: {} };
   const storeConfigs = allocationRoot.stores || {};
   const CONTINUOUS_LAYOUT_VERSION = allocationRoot.version || "1";
-  const SANSHAN_SHELF_UPDATE_VERSION = "2026.07.30.01";
+  const SANSHAN_SHELF_UPDATE_VERSION = "2026.07.30.02";
   const LAYERS = ["A", "B", "C", "D"];
   const nativeSetItem = Storage.prototype.setItem;
   const nativeRemoveItem = Storage.prototype.removeItem;
@@ -138,7 +138,10 @@
     const inputGroups = inputData.groups || [];
     const targetIds = targetGroups.map(group => group.id);
     const inputIds = inputGroups.map(group => group.id);
+    const hasLegacySanshanSnackBands = storeId === "sanshan-xingyue" &&
+      (inputIds.includes("KQ12—KQ16") || inputIds.includes("KQ17—KQ18"));
     const alreadyContinuous =
+      !hasLegacySanshanSnackBands &&
       inputData.layoutVersion === targetVersion &&
       sameJson(targetIds, inputIds) &&
       targetGroups.every((group, index) =>
@@ -221,7 +224,7 @@
         ...clone(target.storeMeta || {}),
         migratedToContinuousBandsAt: new Date().toISOString(),
         ...(storeId === "sanshan-xingyue" && targetVersion === SANSHAN_SHELF_UPDATE_VERSION
-          ? { sanshanSnackShelfAllocationUpdatedAt: new Date().toISOString() }
+          ? { sanshanSnackShelfAllocationUpdatedAt: new Date().toISOString(), sanshanSnackShelfAllocationVersion: SANSHAN_SHELF_UPDATE_VERSION }
           : {})
       },
       generatedAt: target.generatedAt
@@ -385,7 +388,7 @@
     return {
       type: CLOUD_WRAPPER_TYPE,
       schemaVersion: CLOUD_SCHEMA_VERSION,
-      version: "2026.07.30.01",
+      version: "2026.07.30.02",
       updatedAt: new Date().toISOString(),
       stores: {},
       storeMeta: {}
