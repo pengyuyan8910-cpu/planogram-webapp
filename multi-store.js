@@ -13,6 +13,7 @@
   const CLOUD_PULL_FLAG_PREFIX = "planogram-cloud-pulled-v2::";
   const CLOUD_EXPORT_FLAG = "planogram-cloud-export-v2";
   const CLOUD_BASE_KEY = "planogram-cloud-base-v2";
+  const CLOUD_RECOVERY_NOTICE_PREFIX = "planogram-cloud-empty-recovered-v1::";
   const originalData = JSON.parse(JSON.stringify(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] }));
   const allocationRoot = window.PLANOGRAM_STORE_ALLOCATIONS || { stores: {} };
   const storeConfigs = allocationRoot.stores || {};
@@ -39,11 +40,21 @@
     try { return value ? JSON.parse(value) : null; } catch (_) { return null; }
   };
   const validData = value => value && Array.isArray(value.products) && Array.isArray(value.groups);
+  const usableStoreData = value => validData(value) && value.products.length > 0 && value.groups.length > 0;
   const storeKey = storeId => STORE_PREFIX + storeId;
   const availableStoreIds = () => [ORIGINAL_STORE_ID, ...Object.keys(storeConfigs)];
   const storeName = storeId => storeId === ORIGINAL_STORE_ID
     ? "和县小市口生活馆"
     : (storeConfigs[storeId]?.name || storeId);
+
+  function markEmptyRecoveryNotice(storeId, revision = null) {
+    try {
+      window.sessionStorage.setItem(CLOUD_RECOVERY_NOTICE_PREFIX + storeId, JSON.stringify({
+        revision,
+        recoveredAt: new Date().toISOString()
+      }));
+    } catch (_) {}
+  }
 
   function buildStoreInitial(storeId) {
     if (storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
@@ -128,11 +139,31 @@
   }
 
   function migrateStoreLayout(storeId, inputData) {
-    if (!validData(inputData) || storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
-      return validData(inputData) ? clone(inputData) : inputData;
+    if (!validData(inputData)) return inputData;
+
+    if (storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
+      if (usableStoreData(inputData)) return clone(inputData);
+      const recoveredOriginal = buildStoreInitial(ORIGINAL_STORE_ID);
+      recoveredOriginal.storeMeta = {
+        ...clone(recoveredOriginal.storeMeta || {}),
+        recoveredFromEmptyRecordAt: new Date().toISOString(),
+        recoveredFromEmptyRecordReason: "products或groups为空"
+      };
+      markEmptyRecoveryNotice(storeId);
+      return recoveredOriginal;
     }
 
     const target = buildStoreInitial(storeId);
+    if (!usableStoreData(inputData)) {
+      target.storeMeta = {
+        ...clone(target.storeMeta || {}),
+        ...clone(inputData.storeMeta || {}),
+        recoveredFromEmptyRecordAt: new Date().toISOString(),
+        recoveredFromEmptyRecordReason: "products或groups为空"
+      };
+      markEmptyRecoveryNotice(storeId);
+      return target;
+    }
     const targetVersion = target.layoutVersion || CONTINUOUS_LAYOUT_VERSION;
     const targetGroups = target.groups || [];
     const inputGroups = inputData.groups || [];
@@ -216,8 +247,8 @@
       storeName: target.storeName,
       layoutVersion: targetVersion,
       layoutMode: target.layoutMode,
-      categories: clone(inputData.categories || target.categories || []),
-      products: clone(inputData.products || target.products || []),
+      categories: clone(inputData.categories?.length ? inputData.categories : (target.categories || [])),
+      products: clone(inputData.products?.length ? inputData.products : (target.products || [])),
       groups: migratedGroups,
       storeMeta: {
         ...clone(inputData.storeMeta || {}),
@@ -597,6 +628,7 @@
       const remote = await readCloudDocument();
       const wrapper = normalizeCloudPayload(remote?.payload);
       const rawStoreData = wrapper.stores[selectedStoreId];
+      const cloudRecordIsEmpty = validData(rawStoreData) && !usableStoreData(rawStoreData);
       const storeData = validData(rawStoreData)
         ? migrateStoreLayout(selectedStoreId, rawStoreData)
         : rawStoreData;
@@ -605,7 +637,12 @@
         cloudNote("“" + storeName(selectedStoreId) + "”云端尚未初始化。确认本地陈列后点击“保存至云端”即可创建。", true);
         return;
       }
-      cloudNote("已拉取“" + storeName(selectedStoreId) + "”云端第 " + (remote?.revision || 0) + " 版，正在刷新页面…");
+      if (cloudRecordIsEmpty) {
+        markEmptyRecoveryNotice(selectedStoreId, remote?.revision || 0);
+        cloudNote("检测到“" + storeName(selectedStoreId) + "”云端记录为空，已从内置门店底表恢复，正在刷新页面…", true);
+      } else {
+        cloudNote("已拉取“" + storeName(selectedStoreId) + "”云端第 " + (remote?.revision || 0) + " 版，正在刷新页面…");
+      }
       applyCloudStoreLocally(clone(storeData), remote?.revision || 0, Boolean(options.exportAfterPull));
     } catch (error) {
       cloudNote(error.message || "云端数据拉取失败。", true);
@@ -618,15 +655,20 @@
     cloudNote("正在保存“" + storeName(selectedStoreId) + "”至云端…");
     try {
       const localData = currentLocalData();
+      if (!usableStoreData(localData)) {
+        cloudNote("当前门店本地数据为空，已阻止保存，避免覆盖云端。请刷新页面恢复后再保存。", true);
+        return;
+      }
       const remote = await readCloudDocument();
       const wrapper = normalizeCloudPayload(remote?.payload);
       const rawRemoteStoreData = wrapper.stores[selectedStoreId];
-      const remoteStoreData = validData(rawRemoteStoreData)
+      const remoteRecordIsEmpty = validData(rawRemoteStoreData) && !usableStoreData(rawRemoteStoreData);
+      const remoteStoreData = usableStoreData(rawRemoteStoreData)
         ? migrateStoreLayout(selectedStoreId, rawRemoteStoreData)
-        : rawRemoteStoreData;
+        : null;
       let nextStoreData = clone(localData);
 
-      if (validData(remoteStoreData)) {
+      if (usableStoreData(remoteStoreData) && !remoteRecordIsEmpty) {
         if (!multiStoreCloudBaseData) {
           cloudNote("当前页面尚未建立该门店的云端基准，请先点击“拉取云端数据”，再修改并保存。", true);
           return;
@@ -949,7 +991,17 @@
 
     if (!context.isOriginalStore) {
       const status = document.getElementById("statusBar");
-      if (status) status.textContent = `${context.storeName}已按实际连续货架带展示；本地调整与云端协作均按门店隔离。`;
+      const recoveryNoticeKey = CLOUD_RECOVERY_NOTICE_PREFIX + selectedStoreId;
+      const recoveryNotice = parseJson(window.sessionStorage.getItem(recoveryNoticeKey));
+      if (recoveryNotice) {
+        window.sessionStorage.removeItem(recoveryNoticeKey);
+        if (status) {
+          status.textContent = `${context.storeName}的云端记录为空，系统已从内置门店底表恢复。请进入“云端协作”点击“保存至云端”一次，以修复该门店云端记录。`;
+          status.classList.add("error");
+        }
+      } else if (status) {
+        status.textContent = `${context.storeName}已按实际连续货架带展示；本地调整与云端协作均按门店隔离。`;
+      }
       const dialog = document.createElement("dialog");
       dialog.id = "storePointDialog";
       dialog.className = "editor-dialog admin-dialog store-point-dialog";
