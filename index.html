@@ -21,7 +21,7 @@
       <div>
         <p class="eyebrow">和县小市口生活馆</p>
         <h1>全品类可视化陈列系统</h1>
-        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.07.30.03 · 云端空门店自动恢复</span></p>
+        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.07.30.04 · 启动空数据强制兜底</span></p>
       </div>
       <div class="top-actions">
         <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类Excel陈列图</button>
@@ -226,7 +226,43 @@
   <script src="./data/initial-data.js?v=2026.07.24.01"></script>
   <script src="./data/store-data.js?v=2026.07.30.03"></script>
   <script src="./multi-store.js?v=2026.07.30.03"></script>
-  <script src="./app.js?v=2026.07.24.01"></script>
+  <script>
+    (() => {
+      "use strict";
+      const mainKey = "planogram-webapp-state-v1";
+      const selectedKey = "planogram-selected-store-v1";
+      const activeKey = "planogram-active-store-v1";
+      const storePrefix = "planogram-store-state-v1::";
+      const noticePrefix = "planogram-cloud-empty-recovered-v1::";
+      const parse = value => { try { return value ? JSON.parse(value) : null; } catch (_) { return null; } };
+      const usable = value => Boolean(
+        value &&
+        Array.isArray(value.products) && value.products.length > 0 &&
+        Array.isArray(value.groups) && value.groups.length > 0
+      );
+
+      const context = window.PLANOGRAM_STORE_CONTEXT || {};
+      const selectedStoreId = context.storeId || localStorage.getItem(selectedKey) || localStorage.getItem(activeKey) || "";
+      const builtIn = window.PLANOGRAM_INITIAL_DATA;
+      const current = parse(localStorage.getItem(mainKey));
+
+      if (selectedStoreId && selectedStoreId !== "hexian-xiaoshikou" && usable(builtIn) && !usable(current)) {
+        try {
+          localStorage.removeItem(mainKey);
+          localStorage.removeItem(storePrefix + selectedStoreId);
+          localStorage.setItem(selectedKey, selectedStoreId);
+          localStorage.setItem(activeKey, selectedStoreId);
+        } catch (_) {}
+        try {
+          sessionStorage.setItem(noticePrefix + selectedStoreId, JSON.stringify({
+            recoveredAt: new Date().toISOString(),
+            source: "pre-app-empty-state-guard"
+          }));
+        } catch (_) {}
+      }
+    })();
+  </script>
+  <script src="./app.js?v=2026.07.30.04"></script>
   <script src="./excel-planogram.js?v=2026.07.29.06"></script>
 </body>
 </html>
