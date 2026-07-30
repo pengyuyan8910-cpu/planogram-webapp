@@ -39,13 +39,59 @@
   const parseJson = value => {
     try { return value ? JSON.parse(value) : null; } catch (_) { return null; }
   };
-  const validData = value => value && Array.isArray(value.products) && Array.isArray(value.groups);
-  const usableStoreData = value => validData(value) && value.products.length > 0 && value.groups.length > 0;
+  const isRecord = value => Boolean(value && typeof value === "object" && !Array.isArray(value));
+  const validProductRecord = item => isRecord(item) && typeof item.id === "string" && item.id.trim();
+  const validGroupRecord = item => isRecord(item) && typeof item.id === "string" && item.id.trim();
+  const validPitRecord = item => isRecord(item) && typeof item.productId === "string" && item.productId.trim();
+  const validData = value => isRecord(value) && Array.isArray(value.products) && Array.isArray(value.groups);
+
+  function sanitizeStoreData(value) {
+    if (!validData(value)) return value;
+    const cleaned = clone(value);
+    cleaned.products = (cleaned.products || []).filter(validProductRecord);
+    const productIds = new Set(cleaned.products.map(product => product.id));
+    cleaned.groups = (cleaned.groups || []).filter(validGroupRecord).map(group => {
+      const next = { ...group, layers: isRecord(group.layers) ? { ...group.layers } : {} };
+      LAYERS.forEach(layer => {
+        const source = isRecord(next.layers[layer]) ? next.layers[layer] : {};
+        const capacity = Number(source.capacity);
+        next.layers[layer] = {
+          ...source,
+          capacity: Number.isFinite(capacity) ? Math.max(0, capacity) : 0,
+          pits: (Array.isArray(source.pits) ? source.pits : [])
+            .filter(validPitRecord)
+            .filter(pit => productIds.has(pit.productId))
+        };
+      });
+      return next;
+    });
+    cleaned.categories = Array.isArray(cleaned.categories)
+      ? cleaned.categories.filter(category => typeof category === "string" && category.trim())
+      : [];
+    return cleaned;
+  }
+
+  const usableStoreData = value => {
+    const cleaned = sanitizeStoreData(value);
+    return validData(cleaned) && cleaned.products.length > 0 && cleaned.groups.length > 0;
+  };
   const storeKey = storeId => STORE_PREFIX + storeId;
   const availableStoreIds = () => [ORIGINAL_STORE_ID, ...Object.keys(storeConfigs)];
   const storeName = storeId => storeId === ORIGINAL_STORE_ID
     ? "和县小市口生活馆"
     : (storeConfigs[storeId]?.name || storeId);
+
+  function usableStoreDataFor(storeId, value) {
+    const cleaned = sanitizeStoreData(value);
+    if (!usableStoreData(cleaned)) return false;
+    const expectedProducts = (originalData.products || []).filter(validProductRecord).length;
+    const expectedGroups = storeId === ORIGINAL_STORE_ID
+      ? (originalData.groups || []).filter(validGroupRecord).length
+      : (storeConfigs[storeId]?.groups || []).filter(validGroupRecord).length;
+    const minimumProducts = Math.max(1, Math.floor(expectedProducts * 0.8));
+    const minimumGroups = Math.max(1, Math.floor(expectedGroups * 0.8));
+    return cleaned.products.length >= minimumProducts && cleaned.groups.length >= minimumGroups;
+  }
 
   function markEmptyRecoveryNotice(storeId, revision = null) {
     try {
@@ -65,16 +111,17 @@
     }
     const config = storeConfigs[storeId];
     const overrides = config.productOverrides || {};
-    const products = originalData.products.map(product => ({
+    const products = (originalData.products || []).filter(validProductRecord).map(product => ({
       ...clone(product),
       ...(overrides[String(product.barcode)] || {})
     }));
     const byBarcode = new Map(products.map(product => [String(product.barcode), product]));
-    const groups = (config.groups || []).map(sourceGroup => {
+    const groups = (config.groups || []).filter(validGroupRecord).map(sourceGroup => {
       const group = clone(sourceGroup);
       ["A", "B", "C", "D"].forEach(layer => {
         const layerData = group.layers?.[layer] || { capacity: 1200, pits: [] };
-        layerData.pits = (layerData.pits || []).flatMap(pit => {
+        layerData.pits = (Array.isArray(layerData.pits) ? layerData.pits : []).flatMap(pit => {
+          if (!isRecord(pit)) return [];
           const product = byBarcode.get(String(pit.barcode || ""));
           return product ? [{ ...pit, productId: product.id }] : [];
         });
@@ -140,9 +187,10 @@
 
   function migrateStoreLayout(storeId, inputData) {
     if (!validData(inputData)) return inputData;
+    inputData = sanitizeStoreData(inputData);
 
     if (storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
-      if (usableStoreData(inputData)) return clone(inputData);
+      if (usableStoreDataFor(storeId, inputData)) return clone(inputData);
       const recoveredOriginal = buildStoreInitial(ORIGINAL_STORE_ID);
       recoveredOriginal.storeMeta = {
         ...clone(recoveredOriginal.storeMeta || {}),
@@ -154,7 +202,7 @@
     }
 
     const target = buildStoreInitial(storeId);
-    if (!usableStoreData(inputData)) {
+    if (!usableStoreDataFor(storeId, inputData)) {
       target.storeMeta = {
         ...clone(target.storeMeta || {}),
         ...clone(inputData.storeMeta || {}),
@@ -276,15 +324,15 @@
   }
 
   function saveMainToStore(storeId) {
-    const current = parseJson(window.localStorage.getItem(MAIN_KEY));
-    if (!validData(current)) return;
+    const current = sanitizeStoreData(parseJson(window.localStorage.getItem(MAIN_KEY)));
+    if (!usableStoreDataFor(storeId, current)) return;
     const migrated = migrateStoreLayout(storeId, current);
     writeRaw(storeKey(storeId), JSON.stringify(migrated));
   }
 
   function loadStoreState(storeId) {
-    const saved = parseJson(window.localStorage.getItem(storeKey(storeId)));
-    const source = validData(saved) ? saved : buildStoreInitial(storeId);
+    const saved = sanitizeStoreData(parseJson(window.localStorage.getItem(storeKey(storeId))));
+    const source = usableStoreDataFor(storeId, saved) ? saved : buildStoreInitial(storeId);
     return migrateAndPersistStore(storeId, source);
   }
 
@@ -293,19 +341,19 @@
     let selected = window.localStorage.getItem(SELECTED_KEY) || ORIGINAL_STORE_ID;
     if (!ids.includes(selected)) selected = ORIGINAL_STORE_ID;
     let active = window.localStorage.getItem(ACTIVE_KEY);
-    const currentMain = parseJson(window.localStorage.getItem(MAIN_KEY));
+    const currentMain = sanitizeStoreData(parseJson(window.localStorage.getItem(MAIN_KEY)));
 
     if (!active || !ids.includes(active)) {
       active = ORIGINAL_STORE_ID;
-      if (validData(currentMain) && !window.localStorage.getItem(storeKey(ORIGINAL_STORE_ID))) {
+      if (usableStoreDataFor(ORIGINAL_STORE_ID, currentMain) && !window.localStorage.getItem(storeKey(ORIGINAL_STORE_ID))) {
         writeRaw(storeKey(ORIGINAL_STORE_ID), JSON.stringify(currentMain));
       }
     }
 
     if (active !== selected) {
-      if (validData(currentMain)) saveMainToStore(active);
+      if (usableStoreDataFor(active, currentMain)) saveMainToStore(active);
       writeRaw(MAIN_KEY, JSON.stringify(loadStoreState(selected)));
-    } else if (!validData(currentMain)) {
+    } else if (!usableStoreDataFor(selected, currentMain)) {
       writeRaw(MAIN_KEY, JSON.stringify(loadStoreState(selected)));
     } else {
       const migratedCurrent = migrateStoreLayout(selected, currentMain);
@@ -332,14 +380,14 @@
   let multiStoreCloudBaseData = null;
 
   const baseSnapshot = parseJson(window.sessionStorage.getItem(CLOUD_BASE_KEY));
-  if (baseSnapshot?.storeId === selectedStoreId && baseSnapshot?.revision >= 0 && validData(baseSnapshot.data)) {
+  if (baseSnapshot?.storeId === selectedStoreId && baseSnapshot?.revision >= 0 && usableStoreDataFor(selectedStoreId, baseSnapshot.data)) {
     multiStoreCloudRevision = Number(baseSnapshot.revision) || 0;
     multiStoreCloudBaseData = migrateStoreLayout(selectedStoreId, baseSnapshot.data);
   } else {
     const pulledFlag = parseJson(window.sessionStorage.getItem(CLOUD_PULL_FLAG_PREFIX + selectedStoreId));
     if (pulledFlag?.revision >= 0) {
       const pulledState = parseJson(window.localStorage.getItem(MAIN_KEY));
-      if (validData(pulledState)) {
+      if (usableStoreDataFor(selectedStoreId, pulledState)) {
         multiStoreCloudRevision = Number(pulledFlag.revision) || 0;
         multiStoreCloudBaseData = migrateStoreLayout(selectedStoreId, pulledState);
       }
@@ -387,7 +435,8 @@
   }
 
   function persistCloudBase(data, revision) {
-    const migrated = migrateStoreLayout(selectedStoreId, data);
+    const safeData = usableStoreDataFor(selectedStoreId, data) ? sanitizeStoreData(data) : buildStoreInitial(selectedStoreId);
+    const migrated = migrateStoreLayout(selectedStoreId, safeData);
     multiStoreCloudBaseData = clone(migrated);
     setCloudSessionMeta(revision);
     try {
@@ -419,7 +468,7 @@
     return {
       type: CLOUD_WRAPPER_TYPE,
       schemaVersion: CLOUD_SCHEMA_VERSION,
-      version: "2026.07.30.02",
+      version: "2026.07.30.05",
       updatedAt: new Date().toISOString(),
       stores: {},
       storeMeta: {}
@@ -448,8 +497,8 @@
   }
 
   function currentLocalData() {
-    const data = parseJson(window.localStorage.getItem(MAIN_KEY));
-    const source = validData(data) ? data : buildStoreInitial(selectedStoreId);
+    const data = sanitizeStoreData(parseJson(window.localStorage.getItem(MAIN_KEY)));
+    const source = usableStoreDataFor(selectedStoreId, data) ? data : buildStoreInitial(selectedStoreId);
     const migrated = migrateStoreLayout(selectedStoreId, source);
     if (!sameJson(migrated, source)) {
       writeRaw(storeKey(selectedStoreId), JSON.stringify(migrated));
@@ -493,7 +542,7 @@
 
   function productBlocks(pits) {
     const map = new Map();
-    (pits || []).forEach(pit => {
+    (Array.isArray(pits) ? pits : []).filter(validPitRecord).forEach(pit => {
       const list = map.get(pit.productId) || [];
       list.push(pit);
       map.set(pit.productId, list);
@@ -551,21 +600,25 @@
   }
 
   function mergeCloudList(baseList, localList, remoteList, label, merger, conflicts) {
-    const map = list => new Map((list || []).map(item => [item.id, item]));
-    const base = map(baseList);
-    const local = map(localList);
-    const remote = map(remoteList);
+    const cleanList = list => (Array.isArray(list) ? list : []).filter(item => isRecord(item) && typeof item.id === "string" && item.id.trim());
+    const safeBaseList = cleanList(baseList);
+    const safeLocalList = cleanList(localList);
+    const safeRemoteList = cleanList(remoteList);
+    const map = list => new Map(list.map(item => [item.id, item]));
+    const base = map(safeBaseList);
+    const local = map(safeLocalList);
+    const remote = map(safeRemoteList);
     const ids = [
-      ...(remoteList || []).map(item => item.id),
-      ...(localList || []).map(item => item.id).filter(id => !remote.has(id))
+      ...safeRemoteList.map(item => item.id),
+      ...safeLocalList.map(item => item.id).filter(id => !remote.has(id))
     ];
     return ids.map(id => merger(base.get(id), local.get(id), remote.get(id), label + " " + id, conflicts));
   }
 
   function mergeStoreData(base, local, remote) {
-    base = validData(base) ? migrateStoreLayout(selectedStoreId, base) : base;
-    local = validData(local) ? migrateStoreLayout(selectedStoreId, local) : local;
-    remote = validData(remote) ? migrateStoreLayout(selectedStoreId, remote) : remote;
+    base = usableStoreDataFor(selectedStoreId, base) ? migrateStoreLayout(selectedStoreId, sanitizeStoreData(base)) : null;
+    local = usableStoreDataFor(selectedStoreId, local) ? migrateStoreLayout(selectedStoreId, sanitizeStoreData(local)) : buildStoreInitial(selectedStoreId);
+    remote = usableStoreDataFor(selectedStoreId, remote) ? migrateStoreLayout(selectedStoreId, sanitizeStoreData(remote)) : null;
     if (!base) return { merged: clone(local), conflicts: [] };
     if (!remote) return { merged: clone(local), conflicts: [] };
     const conflicts = [];
@@ -610,7 +663,8 @@
   }
 
   function applyCloudStoreLocally(data, revision, pendingExport = false) {
-    const migrated = migrateStoreLayout(selectedStoreId, data);
+    const safeData = usableStoreDataFor(selectedStoreId, data) ? sanitizeStoreData(data) : buildStoreInitial(selectedStoreId);
+    const migrated = migrateStoreLayout(selectedStoreId, safeData);
     persistCloudBase(migrated, revision);
     writeRaw(storeKey(selectedStoreId), JSON.stringify(migrated));
     writeRaw(MAIN_KEY, JSON.stringify(migrated));
@@ -628,10 +682,11 @@
       const remote = await readCloudDocument();
       const wrapper = normalizeCloudPayload(remote?.payload);
       const rawStoreData = wrapper.stores[selectedStoreId];
-      const cloudRecordIsEmpty = validData(rawStoreData) && !usableStoreData(rawStoreData);
-      const storeData = validData(rawStoreData)
-        ? migrateStoreLayout(selectedStoreId, rawStoreData)
-        : rawStoreData;
+      const sanitizedRemote = validData(rawStoreData) ? sanitizeStoreData(rawStoreData) : rawStoreData;
+      const cloudRecordIsEmpty = validData(rawStoreData) && !usableStoreDataFor(selectedStoreId, sanitizedRemote);
+      const storeData = usableStoreDataFor(selectedStoreId, sanitizedRemote)
+        ? migrateStoreLayout(selectedStoreId, sanitizedRemote)
+        : (cloudRecordIsEmpty ? buildStoreInitial(selectedStoreId) : sanitizedRemote);
       setCloudSessionMeta(remote?.revision || 0);
       if (!validData(storeData)) {
         cloudNote("“" + storeName(selectedStoreId) + "”云端尚未初始化。确认本地陈列后点击“保存至云端”即可创建。", true);
@@ -655,20 +710,21 @@
     cloudNote("正在保存“" + storeName(selectedStoreId) + "”至云端…");
     try {
       const localData = currentLocalData();
-      if (!usableStoreData(localData)) {
+      if (!usableStoreDataFor(selectedStoreId, localData)) {
         cloudNote("当前门店本地数据为空，已阻止保存，避免覆盖云端。请刷新页面恢复后再保存。", true);
         return;
       }
       const remote = await readCloudDocument();
       const wrapper = normalizeCloudPayload(remote?.payload);
       const rawRemoteStoreData = wrapper.stores[selectedStoreId];
-      const remoteRecordIsEmpty = validData(rawRemoteStoreData) && !usableStoreData(rawRemoteStoreData);
-      const remoteStoreData = usableStoreData(rawRemoteStoreData)
-        ? migrateStoreLayout(selectedStoreId, rawRemoteStoreData)
+      const sanitizedRemoteStoreData = validData(rawRemoteStoreData) ? sanitizeStoreData(rawRemoteStoreData) : rawRemoteStoreData;
+      const remoteRecordIsEmpty = validData(rawRemoteStoreData) && !usableStoreDataFor(selectedStoreId, sanitizedRemoteStoreData);
+      const remoteStoreData = usableStoreDataFor(selectedStoreId, sanitizedRemoteStoreData)
+        ? migrateStoreLayout(selectedStoreId, sanitizedRemoteStoreData)
         : null;
       let nextStoreData = clone(localData);
 
-      if (usableStoreData(remoteStoreData) && !remoteRecordIsEmpty) {
+      if (usableStoreDataFor(selectedStoreId, remoteStoreData) && !remoteRecordIsEmpty) {
         if (!multiStoreCloudBaseData) {
           cloudNote("当前页面尚未建立该门店的云端基准，请先点击“拉取云端数据”，再修改并保存。", true);
           return;
