@@ -17,6 +17,7 @@
   const allocationRoot = window.PLANOGRAM_STORE_ALLOCATIONS || { stores: {} };
   const storeConfigs = allocationRoot.stores || {};
   const CONTINUOUS_LAYOUT_VERSION = allocationRoot.version || "1";
+  const SANSHAN_SHELF_UPDATE_VERSION = "2026.07.30.01";
   const LAYERS = ["A", "B", "C", "D"];
   const nativeSetItem = Storage.prototype.setItem;
   const nativeRemoveItem = Storage.prototype.removeItem;
@@ -96,6 +97,36 @@
     return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
   }
 
+  function sanshanUpdatedBandPits(targetGroup, layer, currentById) {
+    if (!targetGroup || !["KQ12—KQ17", "KQ18"].includes(targetGroup.id)) return null;
+    const targetLayer = targetGroup.layers?.[layer] || { pits: [] };
+
+    if (targetGroup.id === "KQ12—KQ17") {
+      const currentNew = currentById.get("KQ12—KQ17");
+      if (currentNew) return clone(currentNew.layers?.[layer]?.pits || []);
+      const oldBand = currentById.get("KQ12—KQ16");
+      if (!oldBand) return null;
+      const preserved = clone(oldBand.layers?.[layer]?.pits || []);
+      const addedKQ17 = clone(targetLayer.pits || []).filter(pit => pit.sourceGroupId === "KQ17");
+      const seen = new Set(preserved.map(pit => pit.id));
+      addedKQ17.forEach(pit => { if (!seen.has(pit.id)) preserved.push(pit); });
+      return preserved;
+    }
+
+    const currentNew = currentById.get("KQ18");
+    if (currentNew) return clone(currentNew.layers?.[layer]?.pits || []);
+    const oldBand = currentById.get("KQ17—KQ18");
+    if (!oldBand) return null;
+    return clone(oldBand.layers?.[layer]?.pits || [])
+      .filter(pit => pit.sourceGroupId === "KQ18" || Number(pit.sourceOffsetMm || 0) >= 1200)
+      .map((pit, index) => ({
+        ...pit,
+        sourceGroupId: "KQ18",
+        sourceOffsetMm: 0,
+        sourcePitOrder: index + 1
+      }));
+  }
+
   function migrateStoreLayout(storeId, inputData) {
     if (!validData(inputData) || storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
       return validData(inputData) ? clone(inputData) : inputData;
@@ -119,6 +150,25 @@
     const currentById = new Map(inputGroups.map(group => [group.id, group]));
     const migratedGroups = targetGroups.map(template => {
       const targetGroup = clone(template);
+      const isSanshanShelfUpdate = storeId === "sanshan-xingyue" && targetVersion === SANSHAN_SHELF_UPDATE_VERSION;
+      if (isSanshanShelfUpdate) {
+        const specialLayers = {};
+        let hasSpecialMigration = false;
+        LAYERS.forEach(layer => {
+          const pits = sanshanUpdatedBandPits(targetGroup, layer, currentById);
+          if (pits !== null) {
+            hasSpecialMigration = true;
+            specialLayers[layer] = {
+              ...(targetGroup.layers?.[layer] || { capacity: 1200 }),
+              pits
+            };
+          }
+        });
+        if (hasSpecialMigration) {
+          targetGroup.layers = { ...targetGroup.layers, ...specialLayers };
+          return targetGroup;
+        }
+      }
       const sourceIds = targetGroup.sourceGroupIds || [targetGroup.id];
       const existingBand = currentById.get(targetGroup.id);
       const useExistingBand =
@@ -169,7 +219,10 @@
       storeMeta: {
         ...clone(inputData.storeMeta || {}),
         ...clone(target.storeMeta || {}),
-        migratedToContinuousBandsAt: new Date().toISOString()
+        migratedToContinuousBandsAt: new Date().toISOString(),
+        ...(storeId === "sanshan-xingyue" && targetVersion === SANSHAN_SHELF_UPDATE_VERSION
+          ? { sanshanSnackShelfAllocationUpdatedAt: new Date().toISOString() }
+          : {})
       },
       generatedAt: target.generatedAt
     };
@@ -332,7 +385,7 @@
     return {
       type: CLOUD_WRAPPER_TYPE,
       schemaVersion: CLOUD_SCHEMA_VERSION,
-      version: "2026.07.29.06",
+      version: "2026.07.30.01",
       updatedAt: new Date().toISOString(),
       stores: {},
       storeMeta: {}
