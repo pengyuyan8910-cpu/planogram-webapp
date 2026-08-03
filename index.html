@@ -21,7 +21,7 @@
       <div>
         <p class="eyebrow">和县小市口生活馆</p>
         <h1>全品类可视化陈列系统</h1>
-        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.08.03.01 · 门店数据紧急恢复</span></p>
+        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.08.03.02 · 全门店历史数据只读恢复</span></p>
       </div>
       <div class="top-actions">
         <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类Excel陈列图</button>
@@ -224,68 +224,9 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="./data/initial-data.js?v=2026.07.24.01"></script>
-  <script src="./data/store-data.js?v=2026.08.03.01"></script>
-  <script src="./multi-store.js?v=2026.08.03.01"></script>
-  <script>
-    (() => {
-      "use strict";
-      const mainKey = "planogram-webapp-state-v1";
-      const selectedKey = "planogram-selected-store-v1";
-      const activeKey = "planogram-active-store-v1";
-      const storePrefix = "planogram-store-state-v1::";
-      const noticePrefix = "planogram-cloud-empty-recovered-v1::";
-      const parse = value => { try { return value ? JSON.parse(value) : null; } catch (_) { return null; } };
-      const isRecord = value => Boolean(value && typeof value === "object" && !Array.isArray(value));
-      const clean = value => {
-        if (!isRecord(value) || !Array.isArray(value.products) || !Array.isArray(value.groups)) return null;
-        const next = JSON.parse(JSON.stringify(value));
-        next.products = next.products.filter(item => isRecord(item) && typeof item.id === "string" && item.id.trim());
-        const productIds = new Set(next.products.map(item => item.id));
-        next.groups = next.groups.filter(item => isRecord(item) && typeof item.id === "string" && item.id.trim()).map(group => {
-          group.layers = isRecord(group.layers) ? group.layers : {};
-          ["A", "B", "C", "D"].forEach(layer => {
-            const source = isRecord(group.layers[layer]) ? group.layers[layer] : {};
-            source.pits = (Array.isArray(source.pits) ? source.pits : []).filter(pit =>
-              isRecord(pit) && typeof pit.productId === "string" && productIds.has(pit.productId)
-            );
-            group.layers[layer] = source;
-          });
-          return group;
-        });
-        return next;
-      };
-      const usable = value => Boolean(value && value.products.length > 0 && value.groups.length > 0);
-      const substantial = (value, reference) => Boolean(
-        usable(value) && usable(reference) &&
-        value.products.length >= Math.max(1, Math.floor(reference.products.length * 0.8)) &&
-        value.groups.length >= Math.max(1, Math.floor(reference.groups.length * 0.8))
-      );
-
-      const context = window.PLANOGRAM_STORE_CONTEXT || {};
-      const selectedStoreId = context.storeId || localStorage.getItem(selectedKey) || localStorage.getItem(activeKey) || "";
-      const builtIn = clean(window.PLANOGRAM_INITIAL_DATA);
-      const currentRaw = parse(localStorage.getItem(mainKey));
-      const current = clean(currentRaw);
-      const currentWasCleaned = Boolean(current && JSON.stringify(current) !== JSON.stringify(currentRaw));
-
-      if (selectedStoreId && selectedStoreId !== "hexian-xiaoshikou" && usable(builtIn) && (!substantial(current, builtIn) || currentWasCleaned)) {
-        const repaired = substantial(current, builtIn) ? current : builtIn;
-        try {
-          localStorage.setItem(mainKey, JSON.stringify(repaired));
-          localStorage.setItem(storePrefix + selectedStoreId, JSON.stringify(repaired));
-          localStorage.setItem(selectedKey, selectedStoreId);
-          localStorage.setItem(activeKey, selectedStoreId);
-        } catch (_) {}
-        try {
-          sessionStorage.setItem(noticePrefix + selectedStoreId, JSON.stringify({
-            recoveredAt: new Date().toISOString(),
-            source: substantial(current, builtIn) ? "pre-app-corrupt-record-cleaned" : "pre-app-built-in-restored"
-          }));
-        } catch (_) {}
-      }
-    })();
-  </script>
-  <script src="./app.js?v=2026.07.30.05"></script>
+  <script src="./data/store-data.js?v=2026.08.03.02"></script>
+  <script src="./multi-store.js?v=2026.08.03.02"></script>
+  <script src="./app.js?v=2026.08.03.02"></script>
   <script src="./excel-planogram.js?v=2026.07.29.06"></script>
 </body>
 </html>
