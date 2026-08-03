@@ -21,7 +21,7 @@
       <div>
         <p class="eyebrow">和县小市口生活馆</p>
         <h1>全品类可视化陈列系统</h1>
-        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.08.03.03 · 全门店数据抢救恢复</span></p>
+        <p class="subtitle">底表默认坑位 · 拖拽调整 · 三类产品池 · Excel陈列图 <span class="app-version">版本 v2026.08.03.04 · 全门店安全只读恢复</span></p>
       </div>
       <div class="top-actions">
         <button id="exportPdfBtn" class="btn btn-primary" type="button">导出当前品类Excel陈列图</button>
@@ -224,9 +224,48 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
   <script src="./data/initial-data.js?v=2026.07.24.01"></script>
-  <script src="./store-data.js?v=2026.08.03.03"></script>
-  <script src="./multi-store.js?v=2026.08.03.03"></script>
-  <script src="./app.js?v=2026.08.03.03"></script>
-  <script src="./excel-planogram.js?v=2026.07.29.06"></script>
+  <script>
+    (() => {
+      "use strict";
+      const loadScript = src => new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = src;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("脚本加载失败：" + src));
+        document.body.appendChild(script);
+      });
+      const showBootError = error => {
+        const bar = document.getElementById("statusBar");
+        if (bar) {
+          bar.textContent = "门店恢复数据加载失败：" + (error?.message || error) + "。当前页面已停止启动，未改动任何本地或云端数据。";
+          bar.classList.add("error");
+        }
+        console.error(error);
+      };
+      (async () => {
+        try {
+          if (!("DecompressionStream" in window)) throw new Error("当前浏览器不支持安全解压，请使用最新版Chrome");
+          const response = await fetch("./store-data.json.gz?v=2026.08.03.04", { cache: "no-store" });
+          if (!response.ok) throw new Error("store-data.json.gz未上传或文件为空（HTTP " + response.status + "）");
+          const compressed = await response.arrayBuffer();
+          if (compressed.byteLength < 100000) throw new Error("门店数据压缩包大小异常：" + compressed.byteLength + "字节");
+          const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+          const text = await new Response(stream).text();
+          const allocations = JSON.parse(text);
+          const storeIds = Object.keys(allocations?.stores || {});
+          if (storeIds.length !== 7) throw new Error("门店底表数量异常：应为7家扩展门店，实际" + storeIds.length + "家");
+          window.PLANOGRAM_STORE_ALLOCATIONS = allocations;
+          await loadScript("./multi-store.js?v=2026.08.03.04");
+          if (!window.PLANOGRAM_RESCUE_DEBUG || window.PLANOGRAM_RESCUE_DEBUG.storeIds.length !== 8) {
+            throw new Error("多门店恢复模块自检失败");
+          }
+          await loadScript("./app.js?v=2026.07.30.05");
+          await loadScript("./excel-planogram.js?v=2026.07.29.06");
+        } catch (error) {
+          showBootError(error);
+        }
+      })();
+    })();
+  </script>
 </body>
 </html>

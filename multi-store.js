@@ -1,28 +1,29 @@
 (() => {
   "use strict";
 
-  const VERSION = "2026.08.03.03";
+  const VERSION = "2026.08.03.04";
   const MAIN_KEY = "planogram-webapp-state-v1";
   const SELECTED_KEY = "planogram-selected-store-v1";
   const ACTIVE_KEY = "planogram-active-store-v1";
   const STORE_PREFIX = "planogram-store-state-v1::";
   const ORIGINAL_STORE_ID = "hexian-xiaoshikou";
   const CLOUD_DOCUMENT_ID = "main";
-  const CLOUD_WRAPPER_TYPE = "planogram-multistore-cloud";
-  const RESCUE_REPORT_KEY = "planogram-rescue-report-v1";
-  const QUARANTINE_PREFIX = "planogram-rescue-quarantine-v1::";
   const LAYERS = ["A", "B", "C", "D"];
 
-  const originalData = deepClone(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] });
+  const nativeGetItem = Storage.prototype.getItem;
+  const nativeSetItem = Storage.prototype.setItem;
+  const nativeRemoveItem = Storage.prototype.removeItem;
+  const originalData = clone(window.PLANOGRAM_INITIAL_DATA || { categories: [], products: [], groups: [] });
   const allocationRoot = window.PLANOGRAM_STORE_ALLOCATIONS || { stores: {} };
   const storeConfigs = allocationRoot.stores || {};
   const STORE_IDS = [ORIGINAL_STORE_ID, ...Object.keys(storeConfigs)];
-  const nativeSetItem = Storage.prototype.setItem;
+  let virtualMainValue = null;
+
   const rawLocalSnapshot = {};
   try {
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (key && key.includes("planogram")) rawLocalSnapshot[key] = window.localStorage.getItem(key);
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (key && key.includes("planogram")) rawLocalSnapshot[key] = nativeGetItem.call(window.localStorage, key);
     }
   } catch (_) {}
 
@@ -35,7 +36,7 @@
     };
   }
 
-  function deepClone(value) {
+  function clone(value) {
     if (value === undefined) return undefined;
     return JSON.parse(JSON.stringify(value));
   }
@@ -56,108 +57,30 @@
     return isRecord(item) && typeof item.id === "string" && item.id.trim();
   }
 
+  function cleanProduct(item) {
+    return validProduct(item) ? clone(item) : null;
+  }
+
+  function cleanGroup(group) {
+    if (!validGroup(group)) return null;
+    const next = { ...clone(group), layers: isRecord(group.layers) ? clone(group.layers) : {} };
+    LAYERS.forEach(layer => {
+      const source = isRecord(next.layers[layer]) ? next.layers[layer] : {};
+      next.layers[layer] = {
+        ...source,
+        capacity: Number.isFinite(Number(source.capacity)) ? Number(source.capacity) : 0,
+        pits: (Array.isArray(source.pits) ? source.pits : []).filter(pit => isRecord(pit))
+      };
+    });
+    return next;
+  }
+
   function cleanData(value) {
-    if (!isRecord(value) || !Array.isArray(value.products) || !Array.isArray(value.groups)) return null;
-    const cleaned = deepClone(value);
-    cleaned.products = cleaned.products.filter(validProduct);
-    cleaned.groups = cleaned.groups.filter(validGroup).map(group => {
-      const next = { ...group, layers: isRecord(group.layers) ? { ...group.layers } : {} };
-      LAYERS.forEach(layer => {
-        const layerData = isRecord(next.layers[layer]) ? next.layers[layer] : {};
-        next.layers[layer] = {
-          ...layerData,
-          capacity: Number.isFinite(Number(layerData.capacity)) ? Number(layerData.capacity) : 0,
-          pits: (Array.isArray(layerData.pits) ? layerData.pits : []).filter(pit => isRecord(pit) && typeof pit.productId === "string" && pit.productId.trim())
-        };
-      });
-      return next;
-    });
-    cleaned.categories = Array.isArray(cleaned.categories)
-      ? cleaned.categories.filter(item => typeof item === "string" && item.trim())
-      : [];
-    if (!cleaned.categories.length) {
-      cleaned.categories = [...new Set([
-        ...cleaned.products.map(item => item.category),
-        ...cleaned.groups.map(item => item.category)
-      ].filter(Boolean))];
-    }
-    return cleaned;
-  }
-
-  function salvageData(storeId, value) {
     if (!isRecord(value)) return null;
-    const base = buildStoreInitial(storeId);
-    const rawProducts = Array.isArray(value.products) ? value.products.filter(validProduct) : [];
-    const rawGroups = Array.isArray(value.groups) ? value.groups.filter(validGroup) : [];
-    const baseProducts = Array.isArray(base?.products) ? base.products.filter(validProduct) : [];
-    const baseGroups = Array.isArray(base?.groups) ? base.groups.filter(validGroup) : [];
-
-    // 人工调整主要体现在货架组、层级和坑位顺序。即使 products 被错误清空，
-    // 也保留原货架并用内置产品池补齐产品，避免丢失人工陈列结果。
-    const groupsSource = rawGroups.length ? rawGroups : baseGroups;
-    const productsSource = rawProducts.length ? rawProducts : baseProducts;
-    if (!productsSource.length) return null;
-    if (!groupsSource.length && storeId !== ORIGINAL_STORE_ID) return null;
-
-    const productByBarcode = new Map(productsSource.map(item => [String(item.barcode || ""), item]));
-    const productById = new Map(productsSource.map(item => [String(item.id || ""), item]));
-    const groups = deepClone(groupsSource).map(group => {
-      const next = { ...group, layers: isRecord(group.layers) ? { ...group.layers } : {} };
-      LAYERS.forEach(layer => {
-        const layerData = isRecord(next.layers[layer]) ? next.layers[layer] : {};
-        const pits = Array.isArray(layerData.pits) ? layerData.pits : [];
-        next.layers[layer] = {
-          ...layerData,
-          capacity: Number.isFinite(Number(layerData.capacity)) ? Number(layerData.capacity) : 0,
-          pits: pits.flatMap(pit => {
-            if (!isRecord(pit)) return [];
-            let productId = typeof pit.productId === "string" ? pit.productId.trim() : "";
-            if (!productId && pit.barcode) productId = productByBarcode.get(String(pit.barcode))?.id || "";
-            if (!productId || !productById.has(productId)) return [];
-            return [{ ...pit, productId }];
-          })
-        };
-      });
-      return next;
-    });
-
-    const categories = Array.isArray(value.categories) && value.categories.length
-      ? value.categories.filter(item => typeof item === "string" && item.trim())
-      : (Array.isArray(base?.categories) ? base.categories : []);
-    return {
-      ...deepClone(base || {}),
-      ...deepClone(value),
-      categories,
-      products: deepClone(productsSource),
-      groups,
-      storeId,
-      storeName: storeName(storeId),
-      storeMeta: {
-        ...deepClone(base?.storeMeta || {}),
-        ...deepClone(value.storeMeta || {}),
-        rescuedAt: new Date().toISOString(),
-        rescuedProductsFromBase: rawProducts.length === 0,
-        rescuedGroupsFromBase: rawGroups.length === 0
-      }
-    };
-  }
-
-  function workingData(value) {
-    const cleaned = cleanData(value);
-    return Boolean(cleaned && cleaned.products.length > 0 && cleaned.groups.length > 0);
-  }
-
-  function pitCount(data) {
-    if (!data) return 0;
-    return (data.groups || []).reduce((total, group) => total + LAYERS.reduce((sum, layer) => (
-      sum + (Array.isArray(group.layers?.[layer]?.pits) ? group.layers[layer].pits.length : 0)
-    ), 0), 0);
-  }
-
-  function dataScore(data) {
-    const cleaned = cleanData(data);
-    if (!cleaned) return -1;
-    return cleaned.products.length * 100000 + cleaned.groups.length * 1000 + pitCount(cleaned);
+    const products = (Array.isArray(value.products) ? value.products : []).map(cleanProduct).filter(Boolean);
+    const groups = (Array.isArray(value.groups) ? value.groups : []).map(cleanGroup).filter(Boolean);
+    const categories = (Array.isArray(value.categories) ? value.categories : []).filter(item => typeof item === "string" && item.trim());
+    return { ...clone(value), products, groups, categories };
   }
 
   function storeName(storeId) {
@@ -170,46 +93,29 @@
     return STORE_PREFIX + storeId;
   }
 
-  function expectedGroupCount(storeId) {
-    return storeId === ORIGINAL_STORE_ID
-      ? (Array.isArray(originalData.groups) ? originalData.groups.filter(validGroup).length : 0)
-      : (Array.isArray(storeConfigs[storeId]?.groups) ? storeConfigs[storeId].groups.filter(validGroup).length : 0);
-  }
-
-  function credibleCloudData(storeId, value) {
-    const cleaned = cleanData(value);
-    if (!cleaned || !cleaned.products.length || !cleaned.groups.length) return false;
-    const expectedProducts = Math.max(1, (originalData.products || []).filter(validProduct).length);
-    const expectedGroups = Math.max(1, expectedGroupCount(storeId));
-    return cleaned.products.length >= Math.max(20, Math.floor(expectedProducts * 0.45)) &&
-      cleaned.groups.length >= Math.max(1, Math.floor(expectedGroups * 0.45));
-  }
-
   function buildStoreInitial(storeId) {
     if (storeId === ORIGINAL_STORE_ID || !storeConfigs[storeId]) {
-      const original = deepClone(originalData);
-      original.storeId = ORIGINAL_STORE_ID;
-      original.storeName = storeName(ORIGINAL_STORE_ID);
-      return original;
+      return {
+        ...clone(originalData),
+        storeId: ORIGINAL_STORE_ID,
+        storeName: storeName(ORIGINAL_STORE_ID)
+      };
     }
+
     const config = storeConfigs[storeId];
     const overrides = config.productOverrides || {};
-    const products = (originalData.products || []).filter(validProduct).map(product => ({
-      ...deepClone(product),
+    const products = (originalData.products || []).map(product => ({
+      ...clone(product),
       ...(overrides[String(product.barcode)] || {})
-    }));
-    const byBarcode = new Map(products.map(product => [String(product.barcode), product]));
-    const groups = (config.groups || []).filter(validGroup).map(sourceGroup => {
-      const group = deepClone(sourceGroup);
-      group.layers = isRecord(group.layers) ? group.layers : {};
+    })).filter(validProduct);
+    const byBarcode = new Map(products.map(product => [String(product.barcode || ""), product]));
+    const groups = (config.groups || []).map(cleanGroup).filter(Boolean).map(group => {
       LAYERS.forEach(layer => {
-        const layerData = isRecord(group.layers[layer]) ? group.layers[layer] : { capacity: 0, pits: [] };
-        layerData.pits = (Array.isArray(layerData.pits) ? layerData.pits : []).flatMap(pit => {
-          if (!isRecord(pit)) return [];
+        group.layers[layer].pits = group.layers[layer].pits.flatMap(pit => {
           const product = byBarcode.get(String(pit.barcode || ""));
-          return product ? [{ ...pit, productId: product.id }] : [];
+          if (!product) return [];
+          return [{ ...pit, productId: product.id }];
         });
-        group.layers[layer] = layerData;
       });
       return group;
     });
@@ -218,8 +124,9 @@
       ...(originalData.categories || []).filter(category => groupCategories.has(category)),
       ...[...groupCategories].filter(category => !(originalData.categories || []).includes(category))
     ];
+
     return {
-      ...deepClone(originalData),
+      ...clone(originalData),
       version: `multistore-${allocationRoot.version || VERSION}`,
       source: `多门店陈列生成-${config.name}`,
       storeId,
@@ -229,115 +136,148 @@
       categories,
       products,
       groups,
-      storeMeta: deepClone(config.meta || {}),
+      storeMeta: clone(config.meta || {}),
       generatedAt: allocationRoot.generatedAt || ""
     };
   }
 
-  function quarantineRaw(key, raw) {
-    if (!raw || raw.length > 1500000) return;
-    try {
-      const qKey = QUARANTINE_PREFIX + key + "::" + Date.now();
-      nativeSetItem.call(window.sessionStorage, qKey, raw);
-    } catch (_) {}
+  function mergeProducts(baseProducts, rawProducts) {
+    const order = [];
+    const map = new Map();
+    const barcodeToId = new Map();
+    const add = (item, overwrite) => {
+      if (!validProduct(item)) return;
+      const id = String(item.id);
+      const barcode = String(item.barcode || "");
+      const existingId = map.has(id) ? id : (barcode && barcodeToId.get(barcode));
+      const key = existingId || id;
+      if (!map.has(key)) order.push(key);
+      map.set(key, overwrite && map.has(key) ? { ...map.get(key), ...clone(item) } : clone(item));
+      if (barcode) barcodeToId.set(barcode, key);
+    };
+    (baseProducts || []).forEach(item => add(item, false));
+    (rawProducts || []).forEach(item => add(item, true));
+    return order.map(key => map.get(key)).filter(Boolean);
   }
 
-  function writeRaw(key, value) {
-    nativeSetItem.call(window.localStorage, key, value);
+  function mergeGroups(baseGroups, rawGroups) {
+    const base = (baseGroups || []).map(cleanGroup).filter(Boolean);
+    const raw = (rawGroups || []).map(cleanGroup).filter(Boolean);
+    if (!raw.length) return base;
+    const rawById = new Map(raw.map(group => [group.id, group]));
+    const merged = base.map(group => rawById.get(group.id) || group);
+    const baseIds = new Set(base.map(group => group.id));
+    raw.forEach(group => { if (!baseIds.has(group.id)) merged.push(group); });
+    return merged;
   }
 
-  function readStoreSpecific(storeId) {
-    const raw = window.localStorage.getItem(storeKey(storeId));
-    const parsed = parseJson(raw);
-    return salvageData(storeId, parsed);
+  function salvageData(storeId, value) {
+    const base = buildStoreInitial(storeId);
+    const raw = cleanData(value) || { products: [], groups: [], categories: [] };
+    const products = mergeProducts(base.products || [], raw.products || []);
+    const groups = mergeGroups(base.groups || [], raw.groups || []);
+    if (!products.length || (!groups.length && storeId !== ORIGINAL_STORE_ID)) return null;
+
+    const productIds = new Set(products.map(item => item.id));
+    const byBarcode = new Map(products.map(item => [String(item.barcode || ""), item.id]));
+    groups.forEach(group => {
+      LAYERS.forEach(layer => {
+        group.layers[layer].pits = group.layers[layer].pits.flatMap(pit => {
+          let productId = typeof pit.productId === "string" ? pit.productId.trim() : "";
+          if (!productId && pit.barcode) productId = byBarcode.get(String(pit.barcode)) || "";
+          return productId && productIds.has(productId) ? [{ ...pit, productId }] : [];
+        });
+      });
+    });
+
+    const categories = raw.categories?.length ? raw.categories : (base.categories || []);
+    return {
+      ...clone(base),
+      ...clone(raw),
+      storeId,
+      storeName: storeName(storeId),
+      categories,
+      products,
+      groups,
+      storeMeta: {
+        ...clone(base.storeMeta || {}),
+        ...clone(raw.storeMeta || {}),
+        rescuePreviewVersion: VERSION
+      }
+    };
   }
 
-  function mainBelongsToStore(data, storeId, activeStoreId) {
-    if (!workingData(data)) return false;
-    if (data.storeId && STORE_IDS.includes(data.storeId)) return data.storeId === storeId;
-    return activeStoreId === storeId;
+  function pitCount(data) {
+    return (data?.groups || []).reduce((total, group) => total + LAYERS.reduce((sum, layer) => (
+      sum + (Array.isArray(group.layers?.[layer]?.pits) ? group.layers[layer].pits.length : 0)
+    ), 0), 0);
+  }
+
+  function dataScore(data) {
+    const cleaned = cleanData(data);
+    if (!cleaned) return -1;
+    return cleaned.products.length * 100000 + cleaned.groups.length * 1000 + pitCount(cleaned);
+  }
+
+  function actualLocalGet(key) {
+    try { return nativeGetItem.call(window.localStorage, key); } catch (_) { return null; }
+  }
+
+  function actualSessionGet(key) {
+    try { return nativeGetItem.call(window.sessionStorage, key); } catch (_) { return null; }
   }
 
   function chooseLocalStoreData(storeId) {
     const candidates = [];
     const add = (value, source, bonus = 0) => {
+      if (!isRecord(value)) return;
       const rescued = salvageData(storeId, value);
       if (!rescued) return;
       candidates.push({ data: rescued, source, score: dataScore(rescued) + bonus });
     };
 
-    add(parseJson(window.localStorage.getItem(storeKey(storeId))), "store-key", 500000000);
+    add(parseJson(actualLocalGet(storeKey(storeId))), "门店独立本地记录", 600000000);
 
-    const active = window.localStorage.getItem(ACTIVE_KEY) || ORIGINAL_STORE_ID;
-    const mainRaw = parseJson(window.localStorage.getItem(MAIN_KEY));
-    const mainDeclaredStore = STORE_IDS.includes(mainRaw?.storeId) ? mainRaw.storeId : "";
-    if ((mainDeclaredStore && mainDeclaredStore === storeId) || (!mainDeclaredStore && active === storeId)) {
-      add(mainRaw, "main-key", 400000000);
-    }
+    const active = actualLocalGet(ACTIVE_KEY) || ORIGINAL_STORE_ID;
+    const mainRaw = parseJson(actualLocalGet(MAIN_KEY));
+    const mainStoreId = STORE_IDS.includes(mainRaw?.storeId) ? mainRaw.storeId : active;
+    if (mainStoreId === storeId) add(mainRaw, "当前页面本地记录", 500000000);
 
-    const sessionBase = parseJson(window.sessionStorage.getItem("planogram-cloud-base-v2"));
-    if (sessionBase?.storeId === storeId) add(sessionBase.data, "cloud-session", 300000000);
+    const sessionBase = parseJson(actualSessionGet("planogram-cloud-base-v2"));
+    if (sessionBase?.storeId === storeId) add(sessionBase.data, "浏览器云端基准快照", 400000000);
 
-    // 扫描旧版本可能遗留的全部 planogram 本地键，找回被改名或迁移过的门店状态。
-    for (let index = 0; index < window.localStorage.length; index += 1) {
-      const key = window.localStorage.key(index);
-      if (!key || !key.includes("planogram") || key === MAIN_KEY || key === storeKey(storeId)) continue;
-      const parsed = parseJson(window.localStorage.getItem(key));
-      if (!isRecord(parsed)) continue;
-      const detectedId = STORE_IDS.includes(parsed.storeId) ? parsed.storeId : "";
-      if (detectedId === storeId || key.includes(storeId) || parsed.storeName === storeName(storeId)) {
-        add(parsed, `local-scan:${key}`, 200000000);
+    try {
+      for (let i = 0; i < window.localStorage.length; i += 1) {
+        const key = window.localStorage.key(i);
+        if (!key || !key.includes("planogram") || key === MAIN_KEY || key === storeKey(storeId)) continue;
+        const parsed = parseJson(actualLocalGet(key));
+        if (!isRecord(parsed)) continue;
+        const detected = STORE_IDS.includes(parsed.storeId) ? parsed.storeId : "";
+        if (detected === storeId || key.includes(storeId) || parsed.storeName === storeName(storeId)) {
+          add(parsed, `历史本地键：${key}`, 300000000);
+        }
+        if (isRecord(parsed.data) && (parsed.storeId === storeId || parsed.data.storeId === storeId)) {
+          add(parsed.data, `历史本地键：${key}.data`, 300000000);
+        }
       }
-      if (isRecord(parsed.data) && (parsed.storeId === storeId || parsed.data.storeId === storeId)) {
-        add(parsed.data, `local-scan:${key}.data`, 200000000);
-      }
-    }
+    } catch (_) {}
 
-    add(buildStoreInitial(storeId), "built-in", 0);
-    candidates.sort((left, right) => right.score - left.score);
-    return candidates[0] || { data: null, source: "none" };
-  }
-
-  function saveCurrentMainToStore(storeId) {
-    const raw = window.localStorage.getItem(MAIN_KEY);
-    const data = salvageData(storeId, parseJson(raw));
-    if (!data) return false;
-    const normalized = { ...data, storeId, storeName: storeName(storeId) };
-    writeRaw(storeKey(storeId), JSON.stringify(normalized));
-    return true;
+    const builtIn = salvageData(storeId, buildStoreInitial(storeId));
+    if (builtIn) candidates.push({ data: builtIn, source: "内置门店底表", score: dataScore(builtIn) });
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] || { data: null, source: "无" };
   }
 
   function prepareSelectedStore() {
-    let selected = window.localStorage.getItem(SELECTED_KEY) || ORIGINAL_STORE_ID;
+    let selected = actualLocalGet(SELECTED_KEY) || ORIGINAL_STORE_ID;
     if (!STORE_IDS.includes(selected)) selected = ORIGINAL_STORE_ID;
-    let active = window.localStorage.getItem(ACTIVE_KEY) || selected;
-    if (!STORE_IDS.includes(active)) active = selected;
-
-    const currentRaw = window.localStorage.getItem(MAIN_KEY);
-    const currentParsed = parseJson(currentRaw);
-    const current = salvageData(active, currentParsed);
-    if (current && active !== selected) {
-      writeRaw(storeKey(active), JSON.stringify(current));
-    }
-    if (!current && currentRaw) quarantineRaw(MAIN_KEY, currentRaw);
-
     const picked = chooseLocalStoreData(selected);
-    const rescuedSelected = salvageData(selected, picked.data);
-    if (!rescuedSelected) throw new Error(`无法构建门店数据：${storeName(selected)}`);
-    const selectedData = {
-      ...rescuedSelected,
-      storeId: selected,
-      storeName: storeName(selected)
-    };
+    if (!picked.data) throw new Error(`无法构建门店数据：${storeName(selected)}`);
 
-    writeRaw(MAIN_KEY, JSON.stringify(selectedData));
-    if (!readStoreSpecific(selected) || picked.source !== "built-in") {
-      writeRaw(storeKey(selected), JSON.stringify(selectedData));
-    }
-    writeRaw(SELECTED_KEY, selected);
-    writeRaw(ACTIVE_KEY, selected);
-
-    window.PLANOGRAM_INITIAL_DATA = buildStoreInitial(selected);
+    virtualMainValue = JSON.stringify(picked.data);
+    nativeSetItem.call(window.localStorage, SELECTED_KEY, selected);
+    nativeSetItem.call(window.localStorage, ACTIVE_KEY, selected);
+    window.PLANOGRAM_INITIAL_DATA = clone(picked.data);
     window.PLANOGRAM_STORE_CONTEXT = {
       storeId: selected,
       storeName: storeName(selected),
@@ -350,37 +290,83 @@
 
   const selectedStoreId = prepareSelectedStore();
 
+  Storage.prototype.getItem = function(key) {
+    if (this === window.localStorage && key === MAIN_KEY && virtualMainValue) return virtualMainValue;
+    return nativeGetItem.call(this, key);
+  };
+
   Storage.prototype.setItem = function(key, value) {
     if (this === window.localStorage && key === MAIN_KEY) {
-      const active = window.localStorage.getItem(ACTIVE_KEY) || selectedStoreId;
-      const parsed = salvageData(active, parseJson(value));
-      if (!parsed) {
-        console.warn("已阻止空白或损坏状态覆盖当前门店数据。", parsed);
-        return;
-      }
-      const normalized = { ...parsed, storeId: active, storeName: storeName(active) };
-      nativeSetItem.call(this, key, JSON.stringify(normalized));
-      nativeSetItem.call(this, storeKey(active), JSON.stringify(normalized));
+      const parsed = parseJson(value);
+      const rescued = salvageData(selectedStoreId, parsed);
+      if (rescued) virtualMainValue = JSON.stringify(rescued);
       return;
     }
     nativeSetItem.call(this, key, value);
   };
 
+  Storage.prototype.removeItem = function(key) {
+    if (this === window.localStorage && key === MAIN_KEY) return;
+    nativeRemoveItem.call(this, key);
+  };
+
   function switchStore(nextStoreId) {
     if (!STORE_IDS.includes(nextStoreId)) return;
-    const currentStoreId = window.localStorage.getItem(ACTIVE_KEY) || selectedStoreId;
-    saveCurrentMainToStore(currentStoreId);
-    const picked = chooseLocalStoreData(nextStoreId);
-    const rescuedNext = salvageData(nextStoreId, picked.data);
-    if (!rescuedNext) return;
-    const next = { ...rescuedNext, storeId: nextStoreId, storeName: storeName(nextStoreId) };
-    writeRaw(SELECTED_KEY, nextStoreId);
-    writeRaw(ACTIVE_KEY, nextStoreId);
-    writeRaw(MAIN_KEY, JSON.stringify(next));
-    if (!readStoreSpecific(nextStoreId) || picked.source !== "built-in") {
-      writeRaw(storeKey(nextStoreId), JSON.stringify(next));
-    }
+    nativeSetItem.call(window.localStorage, SELECTED_KEY, nextStoreId);
+    nativeSetItem.call(window.localStorage, ACTIVE_KEY, nextStoreId);
     window.location.reload();
+  }
+
+  function buildAllStoreRecovery() {
+    const stores = {};
+    const summary = [];
+    STORE_IDS.forEach(id => {
+      const picked = chooseLocalStoreData(id);
+      if (!picked.data) return;
+      stores[id] = picked.data;
+      summary.push({
+        id,
+        name: storeName(id),
+        source: picked.source,
+        products: picked.data.products.length,
+        groups: picked.data.groups.length,
+        pits: pitCount(picked.data)
+      });
+    });
+    return {
+      type: "planogram-all-store-rescue",
+      version: VERSION,
+      createdAt: new Date().toISOString(),
+      mode: "read-only-preview",
+      note: "本文件包含系统在当前浏览器中识别出的全部门店恢复数据，以及加载修复版本前的原始本地键值。未写入云端。",
+      summary,
+      stores,
+      rawLocalStorage: rawLocalSnapshot
+    };
+  }
+
+  function downloadJson(filename, value) {
+    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  function downloadRawSnapshot() {
+    downloadJson(`门店原始本地数据备份_${new Date().toISOString().replace(/[:.]/g, "-")}.json`, {
+      version: VERSION,
+      createdAt: new Date().toISOString(),
+      localStorage: rawLocalSnapshot
+    });
+  }
+
+  function downloadAllRecovered() {
+    downloadJson(`全部门店恢复数据_${new Date().toISOString().replace(/[:.]/g, "-")}.json`, buildAllStoreRecovery());
   }
 
   function cloudClient() {
@@ -397,7 +383,7 @@
   async function requireSession() {
     const client = cloudClient();
     if (!client) {
-      cloudNote("云端组件尚未完成加载，请刷新后重试。", true);
+      cloudNote("云端组件尚未加载完成。", true);
       return null;
     }
     const result = await client.auth.getSession();
@@ -423,141 +409,74 @@
   function detectStoreId(record, pathKey = "") {
     if (STORE_IDS.includes(record?.storeId)) return record.storeId;
     if (STORE_IDS.includes(pathKey)) return pathKey;
-    const pathMatched = STORE_IDS.find(id => storeName(id) === pathKey);
-    if (pathMatched) return pathMatched;
-    const name = record?.storeName || record?.name || "";
-    const matched = STORE_IDS.find(id => storeName(id) === name);
-    return matched || "";
+    const byName = STORE_IDS.find(id => storeName(id) === (record?.storeName || record?.name || pathKey));
+    return byName || "";
+  }
+
+  function credibleCloudData(storeId, value) {
+    const cleaned = cleanData(value);
+    if (!cleaned || !cleaned.products.length || !cleaned.groups.length) return false;
+    const base = buildStoreInitial(storeId);
+    return cleaned.products.length >= Math.max(20, Math.floor((base.products?.length || 1) * 0.35)) &&
+      cleaned.groups.length >= Math.max(1, Math.floor((base.groups?.length || 1) * 0.35));
   }
 
   function extractCloudCandidates(payload) {
-    const buckets = new Map(STORE_IDS.map(id => [id, []]));
+    const found = {};
     const seen = new WeakSet();
-
     const add = (id, value, path) => {
       if (!STORE_IDS.includes(id) || !credibleCloudData(id, value)) return;
-      buckets.get(id).push({ data: cleanData(value), path, score: dataScore(value) });
+      const data = salvageData(id, value);
+      const score = dataScore(data);
+      if (!found[id] || score > found[id].score) found[id] = { data, path, score };
     };
-
     const walk = (value, pathKey = "", path = "payload", depth = 0) => {
-      if (depth > 7 || !value || typeof value !== "object") return;
+      if (!value || typeof value !== "object" || depth > 8) return;
       if (seen.has(value)) return;
       seen.add(value);
-
       if (Array.isArray(value)) {
         value.forEach((item, index) => walk(item, "", `${path}[${index}]`, depth + 1));
         return;
       }
-
-      if (workingData(value)) {
-        const detected = detectStoreId(value, pathKey);
-        if (detected) add(detected, value, path);
-        else if (depth === 0) add(ORIGINAL_STORE_ID, value, path);
-      }
-
-      Object.entries(value).forEach(([key, child]) => {
-        if (STORE_IDS.includes(key) && workingData(child)) add(key, child, `${path}.${key}`);
-        walk(child, key, `${path}.${key}`, depth + 1);
-      });
+      const detected = detectStoreId(value, pathKey);
+      if (detected) add(detected, value, path);
+      Object.entries(value).forEach(([key, child]) => walk(child, key, `${path}.${key}`, depth + 1));
     };
-
-    if (isRecord(payload?.stores)) {
-      Object.entries(payload.stores).forEach(([id, data]) => add(id, data, `payload.stores.${id}`));
-    }
-    if (workingData(payload) && payload?.type !== CLOUD_WRAPPER_TYPE) {
-      add(detectStoreId(payload) || ORIGINAL_STORE_ID, payload, "payload-single-store");
-    }
     walk(payload);
-
-    const selected = {};
-    buckets.forEach((items, id) => {
-      if (!items.length) return;
-      items.sort((a, b) => b.score - a.score);
-      selected[id] = items[0];
-    });
-    return selected;
+    return found;
   }
 
-  function localBackupObject() {
-    const stores = {};
-    STORE_IDS.forEach(id => {
-      const raw = window.localStorage.getItem(storeKey(id));
-      if (raw) stores[id] = parseJson(raw) ?? raw;
-    });
-    return {
-      type: "planogram-local-rescue-backup",
-      version: VERSION,
-      createdAt: new Date().toISOString(),
-      selectedStoreId: window.localStorage.getItem(SELECTED_KEY),
-      activeStoreId: window.localStorage.getItem(ACTIVE_KEY),
-      main: parseJson(window.localStorage.getItem(MAIN_KEY)),
-      stores
-    };
-  }
-
-  function downloadJson(filename, value) {
-    const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
-
-  async function recoverCloudStores({ selectedOnly = false } = {}) {
+  async function downloadCloudRescue() {
     if (!await requireSession()) return;
-    cloudNote(selectedOnly ? "正在只读恢复当前门店…" : "正在只读扫描并恢复全部门店…");
+    cloudNote("正在只读读取云端历史数据，不会写入云端…");
     try {
-      downloadJson(`全门店恢复前本地备份_${new Date().toISOString().replace(/[:.]/g, "-")}.json`, localBackupObject());
       const remote = await readCloudDocument();
       const candidates = extractCloudCandidates(remote?.payload);
-      const ids = selectedOnly ? [selectedStoreId] : STORE_IDS;
-      const recovered = [];
-      const kept = [];
-
-      ids.forEach(id => {
-        const candidate = candidates[id];
-        if (!candidate) {
-          kept.push(id);
-          return;
-        }
-        const data = { ...candidate.data, storeId: id, storeName: storeName(id) };
-        writeRaw(storeKey(id), JSON.stringify(data));
-        recovered.push({ id, name: storeName(id), products: data.products.length, groups: data.groups.length, pits: pitCount(data), path: candidate.path });
+      const local = buildAllStoreRecovery();
+      const cloudStores = {};
+      const cloudSummary = [];
+      Object.entries(candidates).forEach(([id, item]) => {
+        cloudStores[id] = item.data;
+        cloudSummary.push({ id, name: storeName(id), path: item.path, products: item.data.products.length, groups: item.data.groups.length, pits: pitCount(item.data) });
       });
-
-      if (candidates[selectedStoreId]) {
-        const active = { ...candidates[selectedStoreId].data, storeId: selectedStoreId, storeName: storeName(selectedStoreId) };
-        writeRaw(MAIN_KEY, JSON.stringify(active));
-      } else {
-        const local = chooseLocalStoreData(selectedStoreId).data;
-        writeRaw(MAIN_KEY, JSON.stringify({ ...local, storeId: selectedStoreId, storeName: storeName(selectedStoreId) }));
-      }
-
-      const report = {
+      downloadJson(`本地与云端全部门店抢救包_${new Date().toISOString().replace(/[:.]/g, "-")}.json`, {
+        type: "planogram-local-cloud-rescue",
         version: VERSION,
-        recoveredAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
         cloudRevision: remote?.revision ?? null,
-        recovered,
-        keptLocalOrBuiltIn: kept.map(id => ({ id, name: storeName(id) }))
-      };
-      window.sessionStorage.setItem(RESCUE_REPORT_KEY, JSON.stringify(report));
-      if (!recovered.length) {
-        cloudNote("云端原始记录中未找到可确认的完整门店数据，本地已有数据未被覆盖。", true);
-        return;
-      }
-      cloudNote(`已只读找回${recovered.length}家门店数据，云端原记录未改动，正在刷新…`);
-      setTimeout(() => window.location.reload(), 350);
+        local,
+        cloudSummary,
+        cloudStores,
+        rawCloudPayload: remote?.payload ?? null
+      });
+      cloudNote(`只读读取完成：找到${cloudSummary.length}家可识别的云端门店记录，已下载抢救包；云端未被修改。`);
     } catch (error) {
-      cloudNote(error?.message || "只读恢复失败，现有本地和云端数据均未改动。", true);
+      cloudNote(error?.message || "云端只读读取失败；本地和云端均未被修改。", true);
     }
   }
 
-  function blockCloudSave() {
-    cloudNote("恢复版本已锁定云端写入，避免再次覆盖历史数据。请先完成全部门店核对。", true);
+  function blockCloudWrite() {
+    cloudNote("当前为只读抢救版本，已阻止云端写入。", true);
   }
 
   function interceptButton(id, handler) {
@@ -567,82 +486,29 @@
     node.addEventListener("click", event => {
       event.preventDefault();
       event.stopImmediatePropagation();
-      Promise.resolve(handler(event)).catch(error => cloudNote(error?.message || "操作失败。", true));
+      Promise.resolve(handler()).catch(error => cloudNote(error?.message || "操作失败。", true));
     }, true);
   }
 
-  function downloadRawLocalSnapshot() {
-    const payload = {
-      version: VERSION,
-      exportedAt: new Date().toISOString(),
-      note: "加载抢救版本前捕获的浏览器原始 planogram 本地键值，未清洗、未覆盖。",
-      localStorage: rawLocalSnapshot
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `门店数据抢救前原始本机备份_${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-  }
-
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, char => ({
-      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
-    }[char]));
-  }
-
-  function pointDialogHtml(config) {
-    const meta = config?.meta || {};
-    const stats = meta.stats || {};
-    const points = Array.isArray(meta.specialPoints) ? meta.specialPoints : [];
-    const cold = Array.isArray(meta.coldEquipment) ? meta.coldEquipment : [];
-    const anomalies = Array.isArray(meta.anomalies) ? meta.anomalies : [];
-    const pointRows = points.map(item => `<tr><td>${escapeHtml(item.type)}</td><td>${escapeHtml(item.pointId)}</td><td>${escapeHtml(item.secondCategory)}</td><td>${escapeHtml(item.productName || "待匹配")}</td><td>${item.boxes || "—"}</td><td>${escapeHtml(item.notes || "")}</td></tr>`).join("");
-    const coldRows = cold.map(item => `<tr><td>${escapeHtml(item.type)}</td><td>${escapeHtml(item.secondCategory)}</td><td>${escapeHtml(item.fixture)}</td><td>${item.candidateSkus?.length || 0}</td></tr>`).join("");
-    const anomalyRows = anomalies.slice(0, 30).map(item => `<li><b>${escapeHtml(item.type)}</b>：${escapeHtml(item.detail || item.name || "")}</li>`).join("");
-    return `
-      <div class="dialog-header"><div><p class="eyebrow">门店独立陈列数据</p><h2>${escapeHtml(config.name)}点位与复核</h2></div><button id="closeStorePointDialog" class="icon-btn" type="button">×</button></div>
-      <div class="store-summary-grid">
-        <article><span>标准货架</span><strong>${stats.ordinaryGroups || config.shelfCount || 0}节</strong></article>
-        <article><span>已陈列SKU</span><strong>${stats.placedSkus || 0}</strong></article>
-        <article><span>未放入SKU</span><strong>${stats.unplacedRecords || 0}</strong></article>
-        <article><span>陈列坑位</span><strong>${stats.pitCount || 0}</strong></article>
-      </div>
-      <section class="store-point-section"><h3>端头、地堆、笼车、花车及附加常温层板</h3><div class="store-table-wrap"><table><thead><tr><th>类型</th><th>点位</th><th>二级类目</th><th>匹配SKU</th><th>箱数</th><th>原表备注</th></tr></thead><tbody>${pointRows || '<tr><td colspan="6">无</td></tr>'}</tbody></table></div></section>
-      <section class="store-point-section"><h3>冷藏/冷冻设备明细</h3><div class="store-table-wrap"><table><thead><tr><th>类型</th><th>二级类目</th><th>柜号/长度</th><th>产品池候选SKU</th></tr></thead><tbody>${coldRows || '<tr><td colspan="4">原表未提供冷柜点位</td></tr>'}</tbody></table></div></section>
-      <section class="store-point-section"><h3>异常复核（前30项）</h3><ul class="store-anomaly-list">${anomalyRows || '<li>无专用点位异常。</li>'}</ul></section>`;
-  }
-
-  function installCloudRecoveryControls() {
-    interceptButton("cloudPullBtn", () => recoverCloudStores({ selectedOnly: true }));
-    interceptButton("cloudPushBtn", blockCloudSave);
-    interceptButton("confirmResetBtn", blockCloudSave);
-
-    const actionRow = document.querySelector("#cloudDialog .admin-section:nth-of-type(2) .dialog-actions");
-    if (actionRow && !document.getElementById("cloudRecoverAllBtn")) {
-      const button = document.createElement("button");
-      button.id = "cloudRecoverAllBtn";
-      button.className = "btn btn-primary";
-      button.type = "button";
-      button.textContent = "只读恢复全部门店";
-      if (typeof actionRow.prepend === "function") actionRow.prepend(button);
-      else actionRow.insertBefore(button, actionRow.firstChild || null);
-      interceptButton("cloudRecoverAllBtn", () => recoverCloudStores({ selectedOnly: false }));
-    }
-
+  function installCloudControls() {
+    interceptButton("cloudPullBtn", downloadCloudRescue);
+    interceptButton("cloudPushBtn", blockCloudWrite);
+    interceptButton("confirmResetBtn", blockCloudWrite);
+    const pull = document.getElementById("cloudPullBtn");
+    if (pull) pull.textContent = "只读下载云端抢救包";
     const push = document.getElementById("cloudPushBtn");
     if (push) {
       push.textContent = "云端写入已锁定";
       push.classList.remove("btn-primary");
     }
     const helper = document.querySelector("#cloudDialog .admin-section:nth-of-type(2) p");
-    if (helper) helper.textContent = "恢复期间只读取云端原始记录，不会写入或删除云端。先点击“只读恢复全部门店”。";
-    const title = document.querySelector("#cloudDialog .dialog-header h2");
-    if (title) title.textContent = `${storeName(selectedStoreId)}｜历史数据只读恢复`;
+    if (helper) helper.textContent = "当前版本只读取并下载云端原始数据，不会覆盖本地，也不会写入或删除云端。";
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, char => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+    }[char]));
   }
 
   function injectUi() {
@@ -652,48 +518,28 @@
     if (eyebrow) eyebrow.textContent = context.storeName;
     document.title = `${context.storeName}｜全品类可视化陈列系统`;
 
-    let holder = document.getElementById("emergencyStoreSwitcher");
-    if (!holder) {
-      holder = document.createElement("div");
-      holder.id = "emergencyStoreSwitcher";
-      holder.className = "store-switcher";
-      holder.innerHTML = `
-        <label for="storeSelect">门店</label>
-        <select id="storeSelect" aria-label="选择门店">
-          ${STORE_IDS.map(id => `<option value="${escapeHtml(id)}" ${id === selectedStoreId ? "selected" : ""}>${escapeHtml(storeName(id))}</option>`).join("")}
-        </select>
-        <button id="downloadRescueRawBtn" class="btn" type="button">下载抢救前原始备份</button>
-        ${context.isOriginalStore ? "" : '<button id="storePointBtn" class="btn" type="button">门店点位</button>'}
-      `;
-      titleRoot?.appendChild(holder);
-    }
+    const holder = document.createElement("div");
+    holder.id = "safeRescueStoreSwitcher";
+    holder.className = "store-switcher";
+    holder.innerHTML = `
+      <label for="storeSelect">门店</label>
+      <select id="storeSelect" aria-label="选择门店">
+        ${STORE_IDS.map(id => `<option value="${escapeHtml(id)}" ${id === selectedStoreId ? "selected" : ""}>${escapeHtml(storeName(id))}</option>`).join("")}
+      </select>
+      <button id="downloadAllRecoveredBtn" class="btn btn-primary" type="button">下载全部门店恢复数据JSON</button>
+      <button id="downloadRawSnapshotBtn" class="btn" type="button">下载原始本地备份</button>
+    `;
+    titleRoot?.appendChild(holder);
     holder.querySelector("#storeSelect")?.addEventListener("change", event => switchStore(event.target.value));
-    document.getElementById("downloadRescueRawBtn")?.addEventListener("click", downloadRawLocalSnapshot);
-
-    installCloudRecoveryControls();
+    holder.querySelector("#downloadAllRecoveredBtn")?.addEventListener("click", downloadAllRecovered);
+    holder.querySelector("#downloadRawSnapshotBtn")?.addEventListener("click", downloadRawSnapshot);
+    installCloudControls();
 
     const status = document.getElementById("statusBar");
-    const report = parseJson(window.sessionStorage.getItem(RESCUE_REPORT_KEY));
-    if (report) {
-      window.sessionStorage.removeItem(RESCUE_REPORT_KEY);
-      if (status) {
-        status.textContent = `只读恢复完成：从云端原始记录找回${report.recovered?.length || 0}家门店；未找到的门店保留原本地数据，云端没有被写入。`;
-        status.classList.remove("error");
-      }
-    } else if (status) {
-      status.textContent = `${context.storeName}已启用历史数据保护；空白或损坏状态不会覆盖现有门店数据。`;
+    const current = JSON.parse(virtualMainValue);
+    if (status) {
+      status.textContent = `只读抢救模式：已识别8家门店；当前“${context.storeName}”来源为${context.rescueSource}，${current.products.length}个产品、${current.groups.length}组货架、${pitCount(current)}个坑位。原始本地和云端均未被覆盖。`;
       status.classList.remove("error");
-    }
-
-    if (!context.isOriginalStore && context.config) {
-      const dialog = document.createElement("dialog");
-      dialog.id = "storePointDialog";
-      dialog.className = "editor-dialog admin-dialog store-point-dialog";
-      dialog.innerHTML = pointDialogHtml(context.config);
-      document.body.appendChild(dialog);
-      holder.querySelector("#storePointBtn")?.addEventListener("click", () => dialog.showModal());
-      dialog.querySelector("#closeStorePointDialog")?.addEventListener("click", () => dialog.close());
-      dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
     }
   }
 
@@ -701,14 +547,9 @@
     version: VERSION,
     storeIds: STORE_IDS.slice(),
     selectedStoreId,
-    storeName,
-    workingData,
-    credibleCloudData,
-    cleanData,
-    salvageData,
     buildStoreInitial,
     chooseLocalStoreData,
-    extractCloudCandidates,
+    buildAllStoreRecovery,
     pitCount,
     dataScore,
     rawLocalSnapshot
