@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "2026.08.04.09";
+  const VERSION = "2026.08.04.10";
   const DB_NAME = "planogram-eight-store-recovery-v1";
   const DB_VERSION = 1;
   const DB_STORE = "stores";
@@ -263,6 +263,18 @@
   let selectedStoreId = STORE_IDS[0];
   let saveTimer = null;
   let capacityRepairReport = [];
+  let firstDeviceInitializationNeeded = false;
+  let missingLocalStoreIds = [];
+
+  async function scanLocalStores() {
+    const validIds = [];
+    const missingIds = [];
+    for (const id of STORE_IDS) {
+      const data = await dbGet(dbRef, id);
+      (valid(data) ? validIds : missingIds).push(id);
+    }
+    return { validIds, missingIds };
+  }
 
   async function prepare() {
     dbRef = await openDb();
@@ -283,9 +295,27 @@
       }
     }
 
+    let localScan = await scanLocalStores();
+    missingLocalStoreIds = localScan.missingIds.slice();
+    firstDeviceInitializationNeeded = missingLocalStoreIds.length > 0;
+
     let data = await dbGet(dbRef, selected);
     if (!valid(data) && active === selected && valid(current)) data = current;
-    if (!valid(data)) throw new Error("尚未恢复8家门店数据，请先使用容量安全恢复页面。\n");
+    if (!valid(data) && localScan.validIds.length) {
+      selected = localScan.validIds[0];
+      data = await dbGet(dbRef, selected);
+    }
+    if (!valid(data)) {
+      const builtIn = clone(window.PLANOGRAM_INITIAL_DATA || {});
+      validateStoreData(builtIn, "内置和县底表");
+      selected = STORE_IDS[0];
+      data = builtIn;
+      await dbPut(dbRef, selected, data);
+      localScan = await scanLocalStores();
+      missingLocalStoreIds = localScan.missingIds.slice();
+      firstDeviceInitializationNeeded = true;
+    }
+
     validateStoreData(data, `本地“${STORE_NAMES[selected]}”`);
     selectedStoreId = selected;
     purgePlanogramLocal();
@@ -295,6 +325,8 @@
       storeId: selected,
       storeName: STORE_NAMES[selected],
       isOriginalStore: selected === STORE_IDS[0],
+      firstDeviceInitializationNeeded,
+      missingLocalStoreIds: missingLocalStoreIds.slice(),
       config: { name: STORE_NAMES[selected], meta: data.storeMeta || {} }
     };
 
@@ -321,7 +353,7 @@
         }
       }
     };
-    return { db: dbRef, selected, data };
+    return { db: dbRef, selected, data, firstDeviceInitializationNeeded, missingLocalStoreIds: missingLocalStoreIds.slice() };
   }
   window.PLANOGRAM_STORE_READY = prepare();
 
@@ -342,6 +374,12 @@
     const current = parse(nativeGetItem.call(localStorage, MAIN_KEY));
     if (valid(current)) await dbPut(dbRef, currentId, validateStoreData(current, `本地“${STORE_NAMES[currentId]}”`));
     const next = await dbGet(dbRef, nextId);
+    if (!valid(next)) {
+      const dialog = document.getElementById("cloudDialog");
+      if (dialog && typeof dialog.showModal === "function" && !dialog.open) dialog.showModal();
+      cloudNote("这台设备尚未初始化全部门店。登录后点击一次“拉取云端数据”，系统会自动下载最新8家门店。", true);
+      throw new Error(`本机尚无“${STORE_NAMES[nextId]}”数据，请先登录并拉取云端数据。`);
+    }
     validateStoreData(next, `IndexedDB“${STORE_NAMES[nextId]}”`);
     purgePlanogramLocal();
     writeCurrent(nextId, next);
@@ -537,6 +575,28 @@
     return Number(row?.revision) || Number(expectedRevision) + 1;
   }
 
+  async function initializeAllStoresFromCloud(remote, preferredStoreId = null) {
+    validateCloudPayload(remote.payload);
+    const initialized = [];
+    const repairs = [];
+    for (const id of STORE_IDS) {
+      const remoteData = validateStoreData(remote.payload.stores[id], `云端“${STORE_NAMES[id]}”`);
+      const repaired = repairStoreCapacity(remoteData, id);
+      await dbPut(dbRef, id, repaired.data);
+      await setCloudBase(dbRef, id, repaired.data, remote.revision);
+      initialized.push(id);
+      if (repaired.repairs.length) repairs.push(...repaired.repairs);
+    }
+    const selected = STORE_IDS.includes(preferredStoreId) ? preferredStoreId : STORE_IDS[0];
+    const selectedData = validateStoreData(await dbGet(dbRef, selected), `初始化“${STORE_NAMES[selected]}”`);
+    purgePlanogramLocal();
+    writeCurrent(selected, selectedData);
+    selectedStoreId = selected;
+    firstDeviceInitializationNeeded = false;
+    missingLocalStoreIds = [];
+    return { selected, initialized, repairs, revision: remote.revision };
+  }
+
   async function checkAllCloud() {
     await requireSession();
     cloudNote("正在只读核对云端8家门店…");
@@ -564,9 +624,19 @@
     const id = nativeGetItem.call(localStorage, ACTIVE_KEY) || selectedStoreId;
     cloudNote(`正在拉取“${STORE_NAMES[id]}”云端数据…`);
     const remote = await readCloudDocument();
+    const localScan = await scanLocalStores();
+
+    if (localScan.missingIds.length) {
+      cloudNote(`检测到本机首次使用，正在从云端第${remote.revision}版自动初始化全部8家门店…`);
+      const result = await initializeAllStoresFromCloud(remote, id);
+      const repairText = result.repairs.length ? `，并修复${result.repairs.length}处历史容量异常` : "";
+      cloudNote(`初始化完成：已从云端第${remote.revision}版下载最新8家门店${repairText}，正在刷新。`);
+      if (!options.noReload) location.reload();
+      return { changed: true, initializedAll: true, revision: remote.revision, repairs: result.repairs.length };
+    }
+
     const remoteData = validateStoreData(remote.payload.stores[id], `云端“${STORE_NAMES[id]}”`);
     const localData = await currentData();
-
     if (sameData(localData, remoteData)) {
       await setCloudBase(dbRef, id, remoteData, remote.revision);
       cloudNote(`“${STORE_NAMES[id]}”本地与云端第${remote.revision}版完全一致，已建立安全保存基准。`);
@@ -591,7 +661,6 @@
     if (!options.noReload) location.reload();
     return { changed: true, revision: remote.revision };
   }
-
   async function safePushCurrentStore() {
     const session = await requireSession();
     const id = nativeGetItem.call(localStorage, ACTIVE_KEY) || selectedStoreId;
@@ -648,12 +717,12 @@
   function installCloudControls() {
     const pull = document.getElementById("cloudPullBtn");
     const push = document.getElementById("cloudPushBtn");
-    if (pull) { pull.disabled = false; pull.textContent = "拉取云端数据"; pull.title = "只覆盖当前门店；数据不同时会先自动下载备份并二次确认"; }
+    if (pull) { pull.disabled = false; pull.textContent = "拉取云端数据"; pull.title = "新设备首次拉取会自动初始化最新8家门店；之后只覆盖当前门店"; }
     if (push) { push.disabled = false; push.textContent = "保存至云端"; push.title = "保存当前门店全部品类；其他7家门店保持不变"; }
 
     document.getElementById("cloudCheckAllBtn")?.remove();
     const helper = document.querySelector("#cloudDialog .admin-section:nth-of-type(2) p");
-    if (helper) helper.textContent = "当前仅拉取和保存已选择门店。保存时包含该门店全部品类，其他7家门店不会被覆盖。";
+    if (helper) helper.textContent = "新设备首次拉取会自动初始化最新8家门店；之后拉取和保存仅作用于当前门店。保存包含该店全部品类，其他7家不会被覆盖。";
     const title = document.querySelector("#cloudDialog .dialog-header h2");
     if (title) title.textContent = `${STORE_NAMES[selectedStoreId]}｜云端数据协作`;
 
@@ -683,8 +752,14 @@
     holder.innerHTML = `<label for="storeSelect">门店</label><select id="storeSelect">${STORE_IDS.map(id => `<option value="${id}" ${id === context.storeId ? "selected" : ""}>${STORE_NAMES[id]}</option>`).join("")}</select><button id="downloadIdbAllBtn" class="btn" type="button">备份全部8家门店</button>`;
     titleRoot?.appendChild(holder);
     holder.querySelector("#storeSelect")?.addEventListener("change", event => {
-      event.target.disabled = true;
-      switchStore(event.target.value).catch(error => { event.target.disabled = false; alert(error.message); });
+      const select = event.target;
+      const previousValue = context.storeId;
+      select.disabled = true;
+      switchStore(select.value).catch(error => {
+        select.value = previousValue;
+        select.disabled = false;
+        alert(error.message);
+      });
     });
     holder.querySelector("#downloadIdbAllBtn")?.addEventListener("click", () => downloadAll().catch(error => alert(error.message)));
 
@@ -696,6 +771,9 @@
         const removedCount = currentRepairs.reduce((sum, item) => sum + item.removed.length, 0);
         const detail = currentRepairs.map(item => `${item.groupId}-${item.layer}层移出${item.removed.length}个超容量坑位，余量${item.remaining}mm`).join("；");
         status.textContent = `已修复“${context.storeName}”容量异常：${detail}。共${removedCount}个坑位对应SKU已进入未放入池，请核对后保存至云端。`;
+        status.classList.remove("error");
+      } else if (context.firstDeviceInitializationNeeded) {
+        status.textContent = `这台设备首次使用：请打开“云端协作”登录，然后点击一次“拉取云端数据”。系统会自动下载云端最新8家门店，无需单独恢复。`;
         status.classList.remove("error");
       } else {
         status.textContent = `8家门店已保存在IndexedDB；当前为“${context.storeName}”。可正常编辑、拉取、保存及导出。`;
@@ -717,6 +795,8 @@
     getCloudBase: id => getCloudBase(dbRef, id),
     exportCurrentCloudExcel,
     capacityRepairReport: () => clone(capacityRepairReport),
-    repairStoreCapacity
+    repairStoreCapacity,
+    initializeAllStoresFromCloud,
+    scanLocalStores
   };
 })();
