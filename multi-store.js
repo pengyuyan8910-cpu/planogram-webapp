@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const VERSION = "2026.08.04.08";
+  const VERSION = "2026.08.04.09";
   const DB_NAME = "planogram-eight-store-recovery-v1";
   const DB_VERSION = 1;
   const DB_STORE = "stores";
@@ -66,6 +66,88 @@
     return (data.groups || []).reduce((sum, group) => sum + ["A", "B", "C", "D"].reduce((layerSum, layer) => (
       layerSum + ((((group || {}).layers || {})[layer] || {}).pits || []).length
     ), 0), 0);
+  }
+
+  function layerUsedWidth(data, group, layer) {
+    const productsById = new Map((data.products || []).map(product => [product.id, product]));
+    const pits = group?.layers?.[layer]?.pits || [];
+    return pits.reduce((sum, pit) => {
+      const width = Number(productsById.get(pit.productId)?.faceWidth);
+      return sum + (Number.isFinite(width) && width > 0 ? width : 0);
+    }, 0);
+  }
+
+  function repairStoreCapacity(data, storeId) {
+    validateStoreData(data, `容量校验“${STORE_NAMES[storeId] || storeId}”`);
+    const next = clone(data);
+    const productsById = new Map(next.products.map(product => [product.id, product]));
+    const repairs = [];
+    const touchedProductIds = new Set();
+
+    next.groups.forEach(group => {
+      ["A", "B", "C", "D"].forEach(layer => {
+        const layerData = group.layers?.[layer];
+        if (!layerData || !Array.isArray(layerData.pits)) return;
+        const capacityValue = Number(layerData.capacity);
+        const capacity = Number.isFinite(capacityValue) && capacityValue >= 0 ? capacityValue : 0;
+        let used = layerData.pits.reduce((sum, pit) => {
+          const width = Number(productsById.get(pit.productId)?.faceWidth);
+          return sum + (Number.isFinite(width) && width > 0 ? width : 0);
+        }, 0);
+        if (used <= capacity) return;
+
+        const beforeUsed = used;
+        const removed = [];
+        while (layerData.pits.length && used > capacity) {
+          const pit = layerData.pits.pop();
+          const product = productsById.get(pit.productId);
+          const widthValue = Number(product?.faceWidth);
+          const width = Number.isFinite(widthValue) && widthValue > 0 ? widthValue : 0;
+          used -= width;
+          touchedProductIds.add(pit.productId);
+          removed.unshift({
+            pitId: pit.id || "",
+            productId: pit.productId,
+            productName: product?.name || pit.productId,
+            width
+          });
+        }
+        repairs.push({
+          storeId,
+          storeName: STORE_NAMES[storeId] || storeId,
+          groupId: group.id,
+          layer,
+          capacity,
+          beforeUsed,
+          afterUsed: used,
+          remaining: capacity - used,
+          removed
+        });
+      });
+    });
+
+    if (repairs.length) {
+      const actualCount = productId => next.groups.reduce((groupSum, group) => (
+        groupSum + ["A", "B", "C", "D"].reduce((layerSum, layer) => (
+          layerSum + (group.layers?.[layer]?.pits || []).filter(pit => pit.productId === productId).length
+        ), 0)
+      ), 0);
+      touchedProductIds.forEach(productId => {
+        const product = productsById.get(productId);
+        if (!product) return;
+        const remainingPits = actualCount(productId);
+        product.plannedPits = Math.max(1, remainingPits || 1);
+        product.dataChanged = true;
+        product.capacityRepairVersion = VERSION;
+        if (remainingPits === 0 && product.status !== "eliminated") product.sourceState = "unplaced";
+      });
+      next.capacityRepairHistory = [
+        ...(Array.isArray(next.capacityRepairHistory) ? next.capacityRepairHistory : []),
+        { version: VERSION, repairedAt: new Date().toISOString(), repairs }
+      ].slice(-20);
+    }
+
+    return { data: next, repairs };
   }
   function validateStoreData(data, label = "门店") {
     if (!valid(data)) throw new Error(`${label}缺少有效商品池或货架组。`);
@@ -180,6 +262,7 @@
   let dbRef = null;
   let selectedStoreId = STORE_IDS[0];
   let saveTimer = null;
+  let capacityRepairReport = [];
 
   async function prepare() {
     dbRef = await openDb();
@@ -188,6 +271,18 @@
     const current = parse(nativeGetItem.call(localStorage, MAIN_KEY));
     if (!STORE_IDS.includes(selected)) selected = STORE_IDS.includes(active) ? active : STORE_IDS[0];
     if (STORE_IDS.includes(active) && valid(current)) await dbPut(dbRef, active, validateStoreData(current, `本地“${STORE_NAMES[active]}”`));
+
+    capacityRepairReport = [];
+    for (const id of STORE_IDS) {
+      const stored = await dbGet(dbRef, id);
+      if (!valid(stored)) continue;
+      const repaired = repairStoreCapacity(stored, id);
+      if (repaired.repairs.length) {
+        capacityRepairReport.push(...repaired.repairs);
+        await dbPut(dbRef, id, repaired.data);
+      }
+    }
+
     let data = await dbGet(dbRef, selected);
     if (!valid(data) && active === selected && valid(current)) data = current;
     if (!valid(data)) throw new Error("尚未恢复8家门店数据，请先使用容量安全恢复页面。\n");
@@ -279,6 +374,120 @@
     });
   }
 
+  const exportInteger = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? Math.round(parsed) : fallback;
+  };
+  const exportNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+  function exportLayer(group, layer) {
+    const source = group?.layers?.[layer] || {};
+    return {
+      capacity: Math.max(0, exportInteger(source.capacity, 0)),
+      pits: Array.isArray(source.pits) ? source.pits : []
+    };
+  }
+  function buildPlacedOnlyExportRows(data) {
+    const productsById = new Map((data.products || []).map(product => [product.id, product]));
+    const placedProductIds = new Set();
+    (data.groups || []).forEach(group => {
+      ["D", "C", "B", "A"].forEach(layer => {
+        exportLayer(group, layer).pits.forEach(pit => {
+          const product = productsById.get(pit.productId);
+          if (product && product.status !== "eliminated") placedProductIds.add(product.id);
+        });
+      });
+    });
+    const products = (data.products || [])
+      .filter(product => placedProductIds.has(product.id) && product.status !== "eliminated")
+      .map(product => ({
+        "一级品类": product.category || "",
+        "二级品类": product.secondCategory || "",
+        "三级品类": product.thirdCategory || "",
+        "四级品类": product.fourthCategory || "",
+        "SKU编码": product.barcode || "",
+        "SKU名称": product.name || "",
+        "等级": product.grade || "",
+        "新品状态": product.newFlag || "",
+        "长(mm)": exportInteger(product.faceWidth, 0),
+        "宽(mm)": exportInteger(product.depth, 0),
+        "高(mm)": exportInteger(product.height, 0),
+        "箱规(件/箱)": exportInteger(product.packSize, 0),
+        "满陈箱数": exportInteger(product.shelfBoxes, 0),
+        "周转天数": exportNumber(product.turnoverDays, 0),
+        "基础坑位": exportInteger(product.basePits, 0),
+        "计划坑位": exportInteger(product.plannedPits, 0),
+        "状态": "陈列中"
+      }));
+    const layerRows = (data.groups || []).flatMap(group => ["D", "C", "B", "A"].map(layer => {
+      const layerData = exportLayer(group, layer);
+      const visiblePits = layerData.pits.filter(pit => placedProductIds.has(pit.productId));
+      const used = visiblePits.reduce((sum, pit) => {
+        const product = productsById.get(pit.productId);
+        return sum + Math.max(0, exportInteger(product?.faceWidth, 0));
+      }, 0);
+      return {
+        "一级品类": group.category || "",
+        "二级品类": group.secondCategory || "",
+        "货架组": group.id || "",
+        "货架类型": group.type || "",
+        "层级": layer,
+        "容量(mm)": layerData.capacity,
+        "已用(mm)": used,
+        "余量(mm)": Math.max(0, layerData.capacity - used),
+        "坑位数": visiblePits.length
+      };
+    }));
+    const placements = (data.groups || []).flatMap(group => ["D", "C", "B", "A"].flatMap(layer => {
+      const layerData = exportLayer(group, layer);
+      let visibleOrder = 0;
+      return layerData.pits.flatMap(pit => {
+        if (!placedProductIds.has(pit.productId)) return [];
+        const product = productsById.get(pit.productId);
+        if (!product || product.status === "eliminated") return [];
+        visibleOrder += 1;
+        return [{
+          "货架组": group.id || "",
+          "层级": layer,
+          "顺序": visibleOrder,
+          "坑位ID": pit.id || "",
+          "SKU编码": product.barcode || pit.barcode || "",
+          "SKU名称": product.name || "",
+          "坑位类型": pit.kind === "expansion" ? "扩陈" : "基础"
+        }];
+      });
+    }));
+    return { products, layerRows, placements };
+  }
+  function safeExportFileName(value) {
+    return String(value || "当前云端陈列底表").replace(/[\/:*?"<>|]/g, "_");
+  }
+  function exportPlacedOnlyCloudExcel(data, id) {
+    if (!window.XLSX) throw new Error("Excel导出组件未加载，请联网刷新页面后重试。");
+    validateStoreData(data, `云端“${STORE_NAMES[id]}”`);
+    const rows = buildPlacedOnlyExportRows(data);
+    if (!rows.products.length || !rows.placements.length) throw new Error("当前门店云端数据中没有陈列图上的SKU可导出。");
+    const workbook = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(workbook, window.XLSX.utils.json_to_sheet(rows.products), "SKU底表");
+    window.XLSX.utils.book_append_sheet(workbook, window.XLSX.utils.json_to_sheet(rows.layerRows), "货架层");
+    window.XLSX.utils.book_append_sheet(workbook, window.XLSX.utils.json_to_sheet(rows.placements), "陈列坑位");
+    const date = new Date().toISOString().slice(0, 10);
+    window.XLSX.writeFile(workbook, safeExportFileName(`${STORE_NAMES[id]}_当前云端陈列中SKU底表_${date}.xlsx`));
+    return rows;
+  }
+  async function exportCurrentCloudExcel() {
+    await requireSession();
+    const id = nativeGetItem.call(localStorage, ACTIVE_KEY) || selectedStoreId;
+    cloudNote(`正在读取“${STORE_NAMES[id]}”云端数据并导出Excel…`);
+    const remote = await readCloudDocument();
+    const remoteData = validateStoreData(remote.payload.stores[id], `云端“${STORE_NAMES[id]}”`);
+    const rows = exportPlacedOnlyCloudExcel(remoteData, id);
+    cloudNote(`已导出“${STORE_NAMES[id]}”云端第${remote.revision}版Excel：${rows.products.length}个陈列中SKU、${rows.placements.length}个坑位。`);
+    return { revision: remote.revision, products: rows.products.length, placements: rows.placements.length };
+  }
+
   function cloudClient() {
     return window.PLANOGRAM_CLOUD_CLIENT || null;
   }
@@ -343,17 +552,17 @@
       }
     }
     if (mismatches.length) {
-      cloudNote(`云端第${remote.revision}版已核对：${8 - mismatches.length}家一致；以下门店本地与云端不同，未覆盖：${mismatches.join("、")}。请切换到对应门店后使用“安全拉取当前门店”核对。`, true);
+      cloudNote(`云端第${remote.revision}版已核对：${8 - mismatches.length}家一致；以下门店本地与云端不同，未覆盖：${mismatches.join("、")}。请切换到对应门店后使用“拉取云端数据”核对。`, true);
       return { revision: remote.revision, mismatches };
     }
-    cloudNote(`核对完成：本地8家门店与云端第${remote.revision}版完全一致。现在可以编辑，修改后使用“安全保存当前门店”。`);
+    cloudNote(`核对完成：本地8家门店与云端第${remote.revision}版完全一致。现在可以编辑，修改后使用“保存至云端”。`);
     return { revision: remote.revision, mismatches: [] };
   }
 
   async function safePullCurrentStore(options = {}) {
     await requireSession();
     const id = nativeGetItem.call(localStorage, ACTIVE_KEY) || selectedStoreId;
-    cloudNote(`正在安全拉取“${STORE_NAMES[id]}”…`);
+    cloudNote(`正在拉取“${STORE_NAMES[id]}”云端数据…`);
     const remote = await readCloudDocument();
     const remoteData = validateStoreData(remote.payload.stores[id], `云端“${STORE_NAMES[id]}”`);
     const localData = await currentData();
@@ -364,7 +573,7 @@
       return { changed: false, revision: remote.revision };
     }
 
-    await downloadCurrentBackup("安全拉取前备份");
+    await downloadCurrentBackup("拉取云端前备份");
     const localSummary = `${localData.products.length}个商品、${localData.groups.length}组、${countPits(localData)}个坑位`;
     const remoteSummary = `${remoteData.products.length}个商品、${remoteData.groups.length}组、${countPits(remoteData)}个坑位`;
     const confirmed = options.force === true || window.confirm(
@@ -378,7 +587,7 @@
     await setCloudBase(dbRef, id, remoteData, remote.revision);
     purgePlanogramLocal();
     writeCurrent(id, remoteData);
-    cloudNote(`“${STORE_NAMES[id]}”已安全拉取云端第${remote.revision}版，正在刷新。`);
+    cloudNote(`“${STORE_NAMES[id]}”已拉取云端第${remote.revision}版，正在刷新。`);
     if (!options.noReload) location.reload();
     return { changed: true, revision: remote.revision };
   }
@@ -386,17 +595,17 @@
   async function safePushCurrentStore() {
     const session = await requireSession();
     const id = nativeGetItem.call(localStorage, ACTIVE_KEY) || selectedStoreId;
-    cloudNote(`正在安全保存“${STORE_NAMES[id]}”…`);
+    cloudNote(`正在保存“${STORE_NAMES[id]}”至云端…`);
     const localData = await currentData();
-    const baseData = await getCloudBase(dbRef, id);
-    if (!valid(baseData)) {
-      throw new Error(`“${STORE_NAMES[id]}”尚未建立云端基准。请先点击“核对全部8家云端”或“安全拉取当前门店”。`);
-    }
-
+    let baseData = await getCloudBase(dbRef, id);
     const remote = await readCloudDocument();
     const remoteCurrent = validateStoreData(remote.payload.stores[id], `云端“${STORE_NAMES[id]}”`);
+    if (!valid(baseData)) {
+      await setCloudBase(dbRef, id, remoteCurrent, remote.revision);
+      baseData = remoteCurrent;
+    }
     if (!sameData(remoteCurrent, baseData)) {
-      throw new Error(`“${STORE_NAMES[id]}”云端已被其他成员更新。已阻止保存，避免覆盖。请先安全拉取当前门店核对。`);
+      throw new Error(`“${STORE_NAMES[id]}”云端已被其他成员更新。已阻止保存，避免覆盖。请先拉取云端数据核对。`);
     }
     if (sameData(localData, remoteCurrent)) {
       await setCloudBase(dbRef, id, remoteCurrent, remote.revision);
@@ -404,7 +613,7 @@
       return { changed: false, revision: remote.revision };
     }
 
-    await downloadCurrentBackup("安全保存前备份");
+    await downloadCurrentBackup("保存云端前备份");
     const nextPayload = clone(remote.payload);
     nextPayload.stores[id] = clone(localData);
     nextPayload.storeMeta = isRecord(nextPayload.storeMeta) ? nextPayload.storeMeta : {};
@@ -418,7 +627,7 @@
     const revision = await saveCloudPayload(nextPayload, remote.revision);
     await dbPut(dbRef, id, localData);
     await setCloudBase(dbRef, id, localData, revision);
-    cloudNote(`“${STORE_NAMES[id]}”已安全保存至云端第${revision}版；其他7家门店原样保留。`);
+    cloudNote(`“${STORE_NAMES[id]}”已保存至云端第${revision}版；其他7家门店原样保留。`);
     return { changed: true, revision };
   }
 
@@ -436,35 +645,30 @@
     }, true);
   }
 
-  function installSafeCloudControls() {
+  function installCloudControls() {
     const pull = document.getElementById("cloudPullBtn");
     const push = document.getElementById("cloudPushBtn");
-    if (pull) { pull.disabled = false; pull.textContent = "安全拉取当前门店"; pull.title = "只覆盖当前门店；数据不同会先下载备份并二次确认"; }
-    if (push) { push.disabled = false; push.textContent = "安全保存当前门店"; push.title = "保存前核对云端基准；只替换当前门店，保留其他7家"; }
+    if (pull) { pull.disabled = false; pull.textContent = "拉取云端数据"; pull.title = "只覆盖当前门店；数据不同时会先自动下载备份并二次确认"; }
+    if (push) { push.disabled = false; push.textContent = "保存至云端"; push.title = "保存当前门店全部品类；其他7家门店保持不变"; }
 
-    const actions = pull?.closest(".dialog-actions");
-    if (actions && !document.getElementById("cloudCheckAllBtn")) {
-      const check = document.createElement("button");
-      check.id = "cloudCheckAllBtn";
-      check.className = "btn";
-      check.type = "button";
-      check.textContent = "核对全部8家云端";
-      actions.insertBefore(check, pull || actions.firstChild);
-    }
+    document.getElementById("cloudCheckAllBtn")?.remove();
     const helper = document.querySelector("#cloudDialog .admin-section:nth-of-type(2) p");
-    if (helper) helper.textContent = "首次先点击“核对全部8家云端”。保存时只更新当前门店，并保留另外7家；检测到冲突会自动阻止覆盖。";
+    if (helper) helper.textContent = "当前仅拉取和保存已选择门店。保存时包含该门店全部品类，其他7家门店不会被覆盖。";
     const title = document.querySelector("#cloudDialog .dialog-header h2");
-    if (title) title.textContent = `${STORE_NAMES[selectedStoreId]}｜安全云端协作`;
+    if (title) title.textContent = `${STORE_NAMES[selectedStoreId]}｜云端数据协作`;
 
     const reset = document.getElementById("confirmResetBtn");
-    if (reset) { reset.disabled = true; reset.title = "安全模式禁止恢复底表"; }
+    if (reset) { reset.disabled = true; reset.title = "多门店模式禁止一键恢复底表，避免误覆盖"; }
     const exportCloud = document.getElementById("exportCloudExcelBtn");
-    if (exportCloud) { exportCloud.disabled = true; exportCloud.title = "请使用当前品类Excel陈列图导出"; }
+    if (exportCloud) {
+      exportCloud.disabled = false;
+      exportCloud.textContent = "导出当前云端 Excel";
+      exportCloud.title = "直接读取当前门店云端数据并导出，不覆盖本地";
+    }
 
-    interceptButton("cloudCheckAllBtn", checkAllCloud);
     interceptButton("cloudPullBtn", safePullCurrentStore);
     interceptButton("cloudPushBtn", safePushCurrentStore);
-    cloudNote("安全云端协作已启用。首次请登录后点击“核对全部8家云端”。");
+    interceptButton("exportCloudExcelBtn", exportCurrentCloudExcel);
   }
 
   async function injectUi() {
@@ -484,11 +688,19 @@
     });
     holder.querySelector("#downloadIdbAllBtn")?.addEventListener("click", () => downloadAll().catch(error => alert(error.message)));
 
-    installSafeCloudControls();
+    installCloudControls();
     const status = document.getElementById("statusBar");
     if (status) {
-      status.textContent = `8家门店已安全保存在IndexedDB；当前为“${context.storeName}”。云端协作已解锁，首次请进入云端协作核对全部8家。`;
-      status.classList.remove("error");
+      const currentRepairs = capacityRepairReport.filter(item => item.storeId === context.storeId);
+      if (currentRepairs.length) {
+        const removedCount = currentRepairs.reduce((sum, item) => sum + item.removed.length, 0);
+        const detail = currentRepairs.map(item => `${item.groupId}-${item.layer}层移出${item.removed.length}个超容量坑位，余量${item.remaining}mm`).join("；");
+        status.textContent = `已修复“${context.storeName}”容量异常：${detail}。共${removedCount}个坑位对应SKU已进入未放入池，请核对后保存至云端。`;
+        status.classList.remove("error");
+      } else {
+        status.textContent = `8家门店已保存在IndexedDB；当前为“${context.storeName}”。可正常编辑、拉取、保存及导出。`;
+        status.classList.remove("error");
+      }
     }
   }
 
@@ -502,6 +714,9 @@
     safePullCurrentStore,
     safePushCurrentStore,
     collectAllStores,
-    getCloudBase: id => getCloudBase(dbRef, id)
+    getCloudBase: id => getCloudBase(dbRef, id),
+    exportCurrentCloudExcel,
+    capacityRepairReport: () => clone(capacityRepairReport),
+    repairStoreCapacity
   };
 })();
